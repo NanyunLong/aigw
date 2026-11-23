@@ -895,24 +895,34 @@ private fun homeDayLabel(millis: Long): String = HOME_DAY_LABEL_FORMAT.format(Da
  */
 @Composable
 internal fun HomeQuotaWidget(state: AppUiState, viewModel: AppViewModel) {
-    val accounts = state.accountsOf("antigravity")
-    if (accounts.isEmpty()) return
+    // 聚合“全部供应商”的账号，而不是只看 antigravity：用户加了任意供应商（含自定义），
+    // 只要它有账号，就该在配额池里出现（没额度接口的显示“尚未拉取配额”）。
+    val accounts = state.accounts
+    if (accounts.isEmpty()) {
+        SectionCard {
+            SectionHeader("上游配额池")
+            Text(
+                text = "还没有账号；添加供应商账号后会在这里显示各自的上游配额。",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        return
+    }
 
-    LaunchedEffect(accounts.map { it.uid }) {
-        accounts.forEach { viewModel.loadCreditPacks("antigravity", it.uid) }
+    LaunchedEffect(accounts.map { "${it.providerId}/${it.uid}" }) {
+        accounts.forEach { viewModel.loadCreditPacks(it.providerId, it.uid) }
     }
 
     SectionCard {
         SectionHeader("上游配额池")
         for (account in accounts) {
-            val packs = state.creditPacks["antigravity/${account.uid}"].orEmpty()
-            if (accounts.size > 1) {
-                Text(
-                    text = account.nickname.ifEmpty { account.uid },
-                    style = MaterialTheme.typography.bodyMedium,
-                    fontWeight = FontWeight.SemiBold,
-                )
-            }
+            val packs = state.creditPacks["${account.providerId}/${account.uid}"].orEmpty()
+            Text(
+                text = account.nickname.ifEmpty { account.uid },
+                style = MaterialTheme.typography.bodyMedium,
+                fontWeight = FontWeight.SemiBold,
+            )
             if (packs.isEmpty()) {
                 Text(
                     text = if (account.detail.isNotEmpty()) account.detail else "尚未拉取配额",
