@@ -11,6 +11,8 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.relocation.BringIntoViewRequester
+import androidx.compose.foundation.relocation.bringIntoViewRequester
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.CloudDownload
@@ -27,6 +29,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -40,6 +43,8 @@ import dev.aigw.core.gateway.CustomProviderConfig
 import dev.aigw.core.provider.custom.CustomProvider
 import dev.aigw.core.provider.custom.ProviderPreset
 import dev.aigw.core.provider.custom.ProviderPresets
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 
 /**
  * 自定义供应商的新建/编辑。
@@ -70,6 +75,10 @@ fun CustomProviderScreen(
     var fetching by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf("") }
 
+    // 「连接」卡片的定位器：点商家「选用」后平滑滚动到这里，把注意力带到已经填好的表单。
+    val connectionRequester = remember { BringIntoViewRequester() }
+    val scrollScope = rememberCoroutineScope()
+
     val baseUrlValue = baseUrl.trim()
     val normalizedBase = remember(baseUrlValue) { CustomProvider.normalizeBaseUrl(baseUrlValue) }
     val firstKey = apiKeysText.lines().map { it.trim() }.firstOrNull { it.isNotEmpty() }.orEmpty()
@@ -96,11 +105,17 @@ fun CustomProviderScreen(
                     key = CustomProviderConfig.deriveKey(preset.name)
                     keyEdited = false
                     baseUrl = preset.baseUrl
+                    // 填好后把「连接」表单平滑滚进视野，省去再往下翻找；
+                    // 稍等一帧等布局稳定（商家清单会同时收起）再触发。
+                    scrollScope.launch {
+                        delay(150)
+                        connectionRequester.bringIntoView()
+                    }
                 },
             )
         }
 
-        SectionCard {
+        SectionCard(modifier = Modifier.bringIntoViewRequester(connectionRequester)) {
             SectionLabel("连接")
             OutlinedTextField(
                 value = name,
@@ -392,7 +407,10 @@ private fun PresetPicker(onPick: (ProviderPreset) -> Unit) {
                             style = MaterialTheme.typography.labelLarge,
                             color = MaterialTheme.colorScheme.primary,
                             modifier = Modifier
-                                .clickable { onPick(preset) }
+                                .clickable {
+                                    onPick(preset)
+                                    expanded = false
+                                }
                                 .padding(start = 12.dp, top = 4.dp, bottom = 4.dp),
                         )
                     }
