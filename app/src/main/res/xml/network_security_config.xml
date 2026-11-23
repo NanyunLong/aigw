@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  本地网关必须能与明文 http 的本地上游通信（llama.cpp / Ollama / LM Studio 等）。
+  这里只对回环与私有网段意义上的常见主机放开明文；其余仍走默认加密策略。
+  注意：Android 的 networkSecurityConfig 不能按 IP 段匹配，
+  因此这里显式列出回环与 localhost，其它主机请用 https 或自行添加 domain。
+-->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="false" />
+    <domain-config cleartextTrafficPermitted="true">
+        <domain includeSubdomains="false">127.0.0.1</domain>
+        <domain includeSubdomains="false">localhost</domain>
+        <domain includeSubdomains="false">::1</domain>
+        <domain includeSubdomains="true">local</domain>
+    </domain-config>
+</network-security-config>

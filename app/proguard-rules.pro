@@ -1,0 +1,3 @@
+-keep class fi.iki.elonen.** { *; }
+-keep class io.aigw.** { *; }
+-dontwarn fi.iki.elonen.**

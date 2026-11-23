@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">aigw</string>
+    <string name="notif_channel">aigw 网关</string>
+    <string name="notif_title">aigw 网关运行中</string>
+</resources>
