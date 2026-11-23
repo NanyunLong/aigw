@@ -10,6 +10,26 @@ Android 上运行的本地 AI 模型聚合网关：把多家私有 AI 服务账�
 
 ---
 
+## 本项目说明 · 与上游的关系
+
+本项目是从开源项目 **[xibai6668/Android-AI-gateway](https://github.com/xibai6668/Android-AI-gateway)** 派生并独立维护的构建，不是官方、也不是上游的分支镜像。核心网关（`core`/`cli`/`app` 三大模块、六家内置供应商、路由与 Failover、加密存储等）均来自上游；本仓库在上游基础上增加了一些上游没有的能力。
+
+### 相对上游新增的功能
+
+| 功能 | 说明 |
+|---|---|
+| **常见商家预设** | 自定义供应商页内置 `ProviderPresets`：DeepSeek、Kimi、智谱、Gemini、OpenRouter 等常见 OpenAI 兼容商家一键填充接口地址与名称，省去手填 baseURL。 |
+| **Loomy 微信扫码登录** | Loomy 账号支持微信网页扫码登录（`qrconnect` 流程），免短信验证码；扫码成功自动换 session 并落库。 |
+| **应用内自动更新** | 「我的」页新增「检查更新 / 自动检查更新 / 项目地址」入口：从本仓库的 GitHub Releases 拉取最新版本，打开应用时每天最多后台检测一次。 |
+| **CI：每日上游同步 + 自动发版** | `.github/workflows/sync-upstream.yml` 每天北京时间 03:00 拉取上游 `xibai6668/Android-AI-gateway` 的新提交并自动合并（仅无冲突时），随后触发 `android-release.yml` 自动建 tag 并发布 APK 到 Releases；`.github/workflows/build-release.yml` 负责常规 release 构建。 |
+| **签名兜底** | 构建流程在 secrets 缺失时会现场生成一次性 PKCS12 keystore，避免空 keystore 导致的 `Tag number over 30` 构建失败；keystore 存储格式按字节头自动判别 JKS/PKCS12。 |
+
+### 与上游保持一致的部分
+
+版本号、`applicationId`（`dev.aigw.app`）、内置供应商协议实现、接口形态与安全策略均与上游保持一致；上游修复若与上述本地功能不冲突，会由同步 workflow 自动并入。**注意**：由于本仓库使用了独立的正式签名证书，与上游或旧版包的签名不同，从旧包迁移时需先卸载旧版本再安装（Android 同包名不同证书不允许覆盖安装）。
+
+---
+
 ## 特性
 
 - **OpenAI 兼容网关**：`/v1/chat/completions` + `/v1/models`，流式 SSE / 非流式 / 多模态识图；另提供 `/v1/images/generations`（图片生成）与 `/v1/audio/transcriptions`（语音转文字）。
