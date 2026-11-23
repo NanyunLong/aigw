@@ -31,6 +31,8 @@ import dev.aigw.core.provider.WebLoginSupport
 import dev.aigw.core.provider.WebLoginTicket
 import dev.aigw.core.provider.antigravity.AntigravityProvider
 import dev.aigw.core.provider.custom.CustomProvider
+import dev.aigw.core.provider.loomy.LoomyProvider
+import dev.aigw.core.provider.loomy.LoomyWechatClient
 import dev.aigw.core.provider.raccoon.RaccoonProvider
 import dev.aigw.core.provider.trae.TraeProvider
 import dev.aigw.core.store.KeyValueStore
@@ -1443,6 +1445,47 @@ class GatewayEngine(
             adopt(providerId, support.loginBySmsCode(phone, code, msgid, ccode), "登录")
         } catch (e: Exception) {
             logWarn("登录失败（$providerId）：${e.message}")
+            LoginOutcome(LoginState.FAILED, error = e.message ?: "登录失败")
+        }
+    }
+
+    // ------------------------------------------------------------------ 微信扫码登录
+
+    /**
+     * 开始一次微信扫码会话（仅 Loomy）。
+     *
+     * 返回 [dev.aigw.core.provider.loomy.LoomyWechatClient.QrSession]，其中含 `uuid` 与二维码图片地址。
+     * 拿到 [dev.aigw.core.provider.loomy.LoomyWechatClient.QrSession.uuid] 后调 [fetchWechatQrImage]
+     * 渲染二维码，再启动 [pollWechatQr] 轮询。
+     */
+    fun beginWechatQr(providerId: String, state: String = "loomy"): LoomyWechatClient.QrSession {
+        val provider = registry.get(providerId) as? LoomyProvider
+            ?: throw IllegalStateException("该供应商不支持微信扫码登录")
+        return provider.beginWechatQr(state)
+    }
+
+    /** 下载二维码图片字节（JPEG），供 UI 渲染。 */
+    fun fetchWechatQrImage(providerId: String, uuid: String): ByteArray {
+        val provider = registry.get(providerId) as? LoomyProvider
+            ?: throw IllegalStateException("该供应商不支持微信扫码登录")
+        return provider.fetchWechatQrImage(uuid)
+    }
+
+    /** 长轮询一次微信扫码状态（仅 Loomy）。 */
+    fun pollWechatQr(providerId: String, uuid: String): LoomyWechatClient.PollResult {
+        val provider = registry.get(providerId) as? LoomyProvider
+            ?: return LoomyWechatClient.PollResult.Failed("该供应商不支持微信扫码登录")
+        return provider.pollWechatQr(uuid)
+    }
+
+    /** 用微信授权 code 换 session 并落池（仅 Loomy）。 */
+    fun completeWechatLogin(providerId: String, code: String): LoginOutcome {
+        val provider = registry.get(providerId) as? LoomyProvider
+            ?: return LoginOutcome(LoginState.FAILED, error = "该供应商不支持微信扫码登录")
+        return try {
+            adopt(providerId, provider.completeWechatLogin(code), "登录")
+        } catch (e: Exception) {
+            logWarn("微信扫码登录失败（$providerId）：${e.message}")
             LoginOutcome(LoginState.FAILED, error = e.message ?: "登录失败")
         }
     }

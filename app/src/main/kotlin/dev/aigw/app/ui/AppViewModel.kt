@@ -34,6 +34,7 @@ import dev.aigw.core.gateway.CustomProviderConfig
 import dev.aigw.core.gateway.GatewayEngine
 import dev.aigw.core.gateway.GatewaySettings
 import dev.aigw.core.gateway.LoginOutcome
+import dev.aigw.core.gateway.LoginState
 import dev.aigw.core.gateway.ModelExposureSettings
 import dev.aigw.core.gateway.ModelsCatalog
 import dev.aigw.core.gateway.ProviderInfo
@@ -52,6 +53,7 @@ import dev.aigw.core.provider.ProviderActionResult
 import dev.aigw.core.provider.ProviderCapability
 import dev.aigw.core.provider.QuotaPack
 import dev.aigw.core.provider.custom.CustomProvider
+import dev.aigw.core.provider.loomy.LoomyWechatClient
 import dev.aigw.core.provider.RoutedModel
 import dev.aigw.core.provider.trae.TraeProvider
 import dev.aigw.core.store.KeyValueStore
@@ -1417,6 +1419,64 @@ class AppViewModel(
         }
     }
 
+    /**
+     * 微信扫码登录（仅 Loomy）：开始会话 → 下载二维码 → 长轮询直到扫码成功/过期 → 落池。
+     *
+     * 全程在后台协程执行；[onQrBytes] 收到二维码 JPEG 字节后由 UI 渲染，
+     * [onStatus] 上报进度文案，[onDone] 收最终结果（空串=成功）。
+     */
+    fun wechatQrLogin(
+        providerId: String,
+        onQrBytes: (ByteArray) -> Unit,
+        onStatus: (String) -> Unit,
+        onDone: (String) -> Unit,
+    ) {
+        viewModelScope.launch {
+            _state.value = _state.value.copy(busy = "正在准备二维码")
+            try {
+                val session = withContext(Dispatchers.IO) { engine.beginWechatQr(providerId) }
+                onStatus("二维码已生成，请用微信扫码")
+                val bytes = withContext(Dispatchers.IO) { engine.fetchWechatQrImage(providerId, session.uuid) }
+                onQrBytes(bytes)
+
+                // 长轮询：微信接口单次可挂起几十秒，直到用户扫码/过期才返回
+                var outcome: LoginOutcome? = null
+                val deadline = System.currentTimeMillis() + WECHAT_QR_TIMEOUT_MS
+                while (System.currentTimeMillis() < deadline && outcome == null) {
+                    val poll = withContext(Dispatchers.IO) { engine.pollWechatQr(providerId, session.uuid) }
+                    when (poll) {
+                        is LoomyWechatClient.PollResult.Success -> {
+                            onStatus("扫码成功，正在登录…")
+                            outcome = withContext(Dispatchers.IO) {
+                                engine.completeWechatLogin(providerId, poll.code)
+                            }
+                        }
+                        is LoomyWechatClient.PollResult.Waiting -> {
+                            onStatus("等待扫码…")
+                            delay(WECHAT_QR_POLL_INTERVAL_MS)
+                        }
+                        is LoomyWechatClient.PollResult.Expired -> {
+                            onStatus("二维码已过期")
+                            outcome = LoginOutcome(LoginState.FAILED, error = "二维码已过期，请重新开始")
+                        }
+                        is LoomyWechatClient.PollResult.Failed -> {
+                            outcome = LoginOutcome(LoginState.FAILED, error = poll.reason)
+                        }
+                    }
+                }
+                if (outcome == null) {
+                    outcome = LoginOutcome(LoginState.FAILED, error = "扫码超时，请重新开始")
+                }
+                _state.value = _state.value.copy(busy = "", notice = noticeOf(outcome))
+                onDone(if (outcome.ok) "" else outcome.error)
+                refresh()
+            } catch (e: Exception) {
+                _state.value = _state.value.copy(busy = "", notice = e.message ?: "微信扫码登录失败")
+                onDone(e.message ?: "微信扫码登录失败")
+            }
+        }
+    }
+
     /** 粘贴凭证导入（Trae 的凭证 JSON、自定义供应商的 API Key）。 */
     fun importCredentials(providerId: String, raw: String) {
         viewModelScope.launch {
@@ -2164,3 +2224,9 @@ class AppViewModel(
         }
     }
 }
+
+/** 微信扫码登录总超时（毫秒）：超过则提示重新开始。 */
+private const val WECHAT_QR_TIMEOUT_MS = 5 * 60 * 1000L
+
+/** 微信扫码轮询间隔（毫秒）：长轮询返回 Waiting 后隔多久再查。 */
+private const val WECHAT_QR_POLL_INTERVAL_MS = 3_000L

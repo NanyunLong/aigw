@@ -33,6 +33,35 @@ object LoomyConstants {
     const val PATH_LOGIN_BY_SMS = "/login/phone/checkCode"
     const val PATH_USER_INFO = "/userinfo/query/baseInfo"
 
+    // ------------------------------------------------------------- 微信扫码登录
+
+    /**
+     * 微信开放平台应用 id（Loomy 官方注册的）。
+     *
+     * 逆向自 Loomy2API 1.2.31 的 `classes.dex`：官方客户端把扫码页直接交给 WebView
+     * `loadUrl(qrconnect 链接)`，回调走 [WECHAT_REDIRECT_URI] 由 WebView 拦截取 code。
+     */
+    const val WECHAT_APP_ID = "wx18d60be432287cf8"
+
+    /** 微信扫码回调地址。注意：这是官方注册的常量，**不能换成自己的**。 */
+    const val WECHAT_REDIRECT_URI = "https://loomy.xunfei.cn/oauth/wechat/callback"
+
+    /** 微信扫码页（标准 `snsapi_login` 流程）。 */
+    fun wechatQrUrl(state: String = "loomy"): String =
+        "https://open.weixin.qq.com/connect/qrconnect" +
+            "?appid=$WECHAT_APP_ID" +
+            "&redirect_uri=${java.net.URLEncoder.encode(WECHAT_REDIRECT_URI, "UTF-8")}" +
+            "&response_type=code&scope=snsapi_login&state=$state#wechat_redirect"
+
+    /** 用微信授权 code 换 session。 */
+    const val PATH_LOGIN_BY_WECHAT = "/login/thirdAccount/bind/auth"
+
+    /** 跳过微信绑定（上游返回 rcode 后调用）。 */
+    const val PATH_WECHAT_BIND_SKIP = "/login/thirdAccount/bind/skip"
+
+    /** 登录渠道标识：微信。 */
+    const val WECHAT_TYPE = "wx"
+
     // ------------------------------------------------------------------ 积分与模型
 
     const val PATH_MODELS = "/api/v1/models"

@@ -66,6 +66,9 @@ fun ProviderDetailScreen(
                     viewModel.smsLogin(id, phone, code, ccode, onResult)
                 }
             },
+            onWechatQr = { id, onQrBytes, onStatus, onDone ->
+                viewModel.wechatQrLogin(id, onQrBytes, onStatus, onDone)
+            },
             onImport = { id, raw -> viewModel.importCredentials(id, raw) },
             onAddCustomAccount = { id, nickname, apiKey, models -> viewModel.addCustomAccount(id, nickname, apiKey, models) },
             onRenameAccount = { id, uid, nickname -> viewModel.renameAccount(id, uid, nickname) },

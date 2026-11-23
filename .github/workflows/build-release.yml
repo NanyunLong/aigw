@@ -27,23 +27,44 @@ jobs:
         with:
           gradle-version: '9.9.1'
 
-      - name: 还原 release keystore
+      # 准备 release 签名与 keystore.properties：
+      #   优先用 secrets 里的真 keystore（KEYSTORE_BASE64）；
+      #   若该 secret 未配置（例如 fork 出来的仓库不继承父仓库 secrets，
+      #   base64 -d 会得到 0 字节空文件，进而触发 “Tag number over 30”），
+      #   则用 CI 自带 keytool 现场生成一个一次性签名，保证能打出可安装的 release 包。
+      - name: 准备 release 签名
         env:
           KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
-        run: echo "$KEYSTORE_BASE64" | base64 -d > "$GITHUB_WORKSPACE/release.keystore"
-
-      - name: 生成 keystore.properties
-        env:
           KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
           KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
           KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
         run: |
+          set -e
+          F="$GITHUB_WORKSPACE/release.keystore"
+          # secrets 为空时给一套确定性的默认值（仅用于自测包，非正式发版）
+          SP="${KEYSTORE_PASSWORD:-aigw-release-pass}"
+          AL="${KEY_ALIAS:-androidrelease}"
+          KP="${KEY_PASSWORD:-$SP}"
+          if [ -n "$KEYSTORE_BASE64" ]; then
+            echo "使用 secrets.KEYSTORE_BASE64 还原 keystore"
+            printf '%s' "$KEYSTORE_BASE64" | base64 -d > "$F"
+          else
+            echo "secrets.KEYSTORE_BASE64 未配置，现场生成一次性 PKCS12 keystore"
+            rm -f "$F"
+            keytool -genkeypair -v -keystore "$F" -storetype PKCS12 \
+              -storepass "$SP" -keypass "$KP" -alias "$AL" \
+              -keyalg RSA -keysize 2048 -validity 10000 \
+              -dname "CN=AI Gateway, O=AI Gateway, C=US"
+          fi
+          # 校验 keystore 可用
+          keytool -list -keystore "$F" -storepass "$SP" >/dev/null
           cat > keystore.properties <<EOF
-          storeFile=$GITHUB_WORKSPACE/release.keystore
-          storePassword=$KEYSTORE_PASSWORD
-          keyAlias=$KEY_ALIAS
-          keyPassword=$KEY_PASSWORD
+          storeFile=$F
+          storePassword=$SP
+          keyAlias=$AL
+          keyPassword=$KP
           EOF
+          echo "keystore.properties:"; cat keystore.properties
 
       - name: 静态检查
         run: gradle :core:detekt --console=plain
