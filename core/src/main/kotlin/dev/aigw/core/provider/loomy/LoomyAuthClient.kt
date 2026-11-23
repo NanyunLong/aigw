@@ -95,17 +95,30 @@ class LoomyAuthClient(
             },
         )
         val data = call(LoomyConstants.PATH_LOGIN_BY_WECHAT, body)
-        val session = data.str("session")
+        // 微信首次登录时，上游 bind/auth 不直接给 session，而是返回 rcode（需二次确认绑定），
+        // 必须再拿 rcode 调 bind/skip 才发 session；老账号则 bind/auth 直接带 session。
+        // 只做第一步、直接找 session 会命中 MISSING_SESSION，界面表现为「上游拒绝了本次请求（HTTP 200）」。
+        var finalData = data
+        var session = finalData.str("session")
         if (session.isEmpty()) {
-            throw LoomyApiException(200, LoomyErrorKind.CLIENT, data.toString(), "MISSING_SESSION")
+            val rcode = finalData.str("rcode").ifEmpty { finalData.str("rCode") }
+            if (rcode.isNotEmpty()) {
+                val skipBody = envelope(JsonObject().apply { addProperty("rcode", rcode) })
+                finalData = call(LoomyConstants.PATH_WECHAT_BIND_SKIP, skipBody)
+                session = finalData.str("session")
+            }
         }
-        val uid = data.str("userid").ifEmpty { data.str("userId") }
+        if (session.isEmpty()) {
+            // 兜底：把上游 data 原文塞进异常，便于定位真实字段名（rcode/session 等）。
+            throw IllegalStateException("微信登录未拿到 session；bind/auth 返回=$data；bind/skip 返回=$finalData")
+        }
+        val uid = finalData.str("userid").ifEmpty { finalData.str("userId") }
         val issuedAt = nowMillis()
         return LoomyAccount(
             uid = uid,
             phone = "",
             session = session,
-            nickname = data.str("nickname"),
+            nickname = finalData.str("nickname"),
             createdAtMillis = issuedAt,
             expiresAtMillis = issuedAt + LoomyConstants.SESSION_EXPIRE_SECONDS * 1000L,
         )

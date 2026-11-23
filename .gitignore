@@ -21,3 +21,4 @@ ui-proposals/
 
 # 本地会话数据（附件、缓存等），不属于仓库
 .aicode/
+MAINTAINER-NOTES.md
