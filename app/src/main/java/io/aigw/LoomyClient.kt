@@ -338,7 +338,7 @@ class AccountError(message: String, val code: String = "", val retryable: Boolea
 /** 轻量 HTTP POST 工具（Android 内无需 okhttp，用 HttpURLConnection）。 */
 object HttpUtil {
     fun postJson(url: String, headers: Map<String, String>, body: String, timeoutMs: Int = 30000): String {
-        val conn = java.net.HttpURLConnection(java.net.URL(url))
+        val conn = java.net.URL(url).openConnection() as java.net.HttpURLConnection
         try {
             conn.requestMethod = "POST"
             conn.connectTimeout = timeoutMs
@@ -358,7 +358,7 @@ object HttpUtil {
     }
 
     fun get(url: String, headers: Map<String, String> = emptyMap(), timeoutMs: Int = 30000): String {
-        val conn = java.net.HttpURLConnection(java.net.URL(url))
+        val conn = java.net.URL(url).openConnection() as java.net.HttpURLConnection
         try {
             conn.requestMethod = "GET"
             conn.connectTimeout = timeoutMs

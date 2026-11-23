@@ -47,7 +47,7 @@ object ModelGateway {
     /** POST 透传（embeddings / images/generations）。返回 (status, body)。 */
     fun call(session: String, suffix: String, payload: JSONObject, extra: Map<String, String> = emptyMap()): Pair<Int, String> {
         val u = url(suffix)
-        val conn = HttpURLConnection(URL(u))
+        val conn = URL(u).openConnection() as HttpURLConnection
         try {
             conn.requestMethod = "POST"
             conn.connectTimeout = 60000
@@ -67,7 +67,7 @@ object ModelGateway {
     /** POST /chat/completions 流式：打开连接返回流。 */
     fun openStream(session: String, suffix: String, payload: JSONObject, extra: Map<String, String> = emptyMap()): StreamResult {
         val u = url(suffix)
-        val conn = HttpURLConnection(URL(u))
+        val conn = URL(u).openConnection() as HttpURLConnection
         conn.requestMethod = "POST"
         conn.connectTimeout = 60000
         conn.readTimeout = 1200000
