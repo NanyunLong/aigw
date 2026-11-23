@@ -10,8 +10,6 @@ name: Build APK (self-signed)
 # 代价：签名指纹每次构建都可能不同，装新包前要先卸载旧包（签名不一致系统会拒绝覆盖）。
 on:
   workflow_dispatch:
-  push:
-    branches: [main]
 
 permissions:
   contents: read
