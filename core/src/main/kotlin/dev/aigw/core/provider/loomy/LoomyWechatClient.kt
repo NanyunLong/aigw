@@ -103,13 +103,19 @@ class LoomyWechatClient(
         }
         val errcode = WX_ERRCODE.matcher(body).let { if (it.find()) it.group(1) else "" }
         val wxCode = WX_CODE.matcher(body).let { if (it.find()) it.group(1) else "" }
+        // 微信 l/qrconnect 的 wx_errcode 语义（以官方扫码页内联 JS 为准，勿凭直觉改）：
+        //   408       = 还没扫码，继续等
+        //   404       = 已扫码，等待手机端点“确认”，继续等（**不是过期！**）
+        //   405 / 200 = 已在手机确认，wx_code 为授权码（200 为部分实现的兼容码）
+        //   403       = 用户在手机上取消
+        //   402 / 500 = 微信侧异常
         return when (errcode) {
-            "200" -> if (wxCode.isEmpty()) PollResult.Failed("微信返回成功但没有授权码")
-            else PollResult.Success(wxCode)
-            "404" -> PollResult.Expired
-            "408", "405" -> PollResult.Waiting
+            "405", "200" ->
+                if (wxCode.isEmpty()) PollResult.Waiting   // 过渡态，等下一拍
+                else PollResult.Success(wxCode)
+            "404", "408" -> PollResult.Waiting             // 已扫码待确认 / 尚未扫码，都继续轮询
+            "403" -> PollResult.Failed("已取消微信登录")
             else -> {
-                // 其它码（如 402/403）是微信侧状态，先看 body 里有没有可读信息
                 val hint = body.replace(Regex("""\s+"""), " ").take(160)
                 PollResult.Failed("微信返回异常状态（code=$errcode）：$hint")
             }
@@ -162,7 +168,7 @@ class LoomyWechatClient(
                 "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 
         private const val QR_IMAGE_BASE = "https://open.weixin.qq.com/connect/qrcode/"
-        private const val QR_POLL_BASE = "https://open.weixin.qq.com/connect/l/qrconnect"
+        private const val QR_POLL_BASE = "https://long.open.weixin.qq.com/connect/l/qrconnect"
 
         /** qrconnect 页面里 uuid 的可能写法（官方页面用 `connect/qrcode/<uuid>` 拼图）。 */
         private val UUID_PATTERNS = listOf(
