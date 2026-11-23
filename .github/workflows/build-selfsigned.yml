@@ -1,0 +1,70 @@
+name: Build APK (self-signed)
+
+# 自签名构建：不依赖作者仓库的 KEYSTORE_BASE64 / KEYSTORE_PASSWORD 等 secrets，
+# 每次在 runner 上现生成一把临时 keystore 来签名。
+#
+# 为什么需要这个：上游只有 release 变体（debug 变体被显式 disable），而 release
+# 必须配置签名才能产出 APK；作者的 secrets 只在他的仓库里，fork 出来跑原 workflow
+# 会在「还原 release keystore」那步拿到空值而失败。
+#
+# 代价：签名指纹每次构建都可能不同，装新包前要先卸载旧包（签名不一致系统会拒绝覆盖）。
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: android-actions/setup-android@v3
+        with:
+          packages: 'platform-tools platforms;android-37.0 build-tools;36.0.0'
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '9.9.1'
+
+      - name: 生成临时签名 keystore
+        run: |
+          keytool -genkeypair -v \
+            -keystore "$GITHUB_WORKSPACE/release.keystore" \
+            -storepass aigw123456 -keypass aigw123456 \
+            -alias aigw -keyalg RSA -keysize 2048 -validity 10000 \
+            -dname "CN=AIGW, OU=Dev, O=AIGW, L=NA, ST=NA, C=CN"
+          cat > keystore.properties <<EOF
+          storeFile=$GITHUB_WORKSPACE/release.keystore
+          storePassword=aigw123456
+          keyAlias=aigw
+          keyPassword=aigw123456
+          EOF
+
+      - name: 编译 release
+        run: gradle :app:assembleRelease --console=plain --stacktrace
+
+      - name: 读取版本号
+        id: version
+        run: |
+          VERSION=$(grep -m1 'versionName' app/build.gradle.kts | sed -E 's/.*"(.*)".*/\1/')
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "本次版本：$VERSION"
+
+      - name: 重命名产物
+        run: cp app/build/outputs/apk/release/app-release.apk "ai-gateway-${{ steps.version.outputs.version }}-selfsigned.apk"
+
+      - name: 上传 APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: ai-gateway-apk
+          path: ai-gateway-*-selfsigned.apk
+          retention-days: 14
