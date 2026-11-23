@@ -1,24 +1,58 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- AI 聚合网关图标：中心一个「网关」方块，6 个来源节点环绕并由连线汇聚到它。
-     中心用圆角方块、外围用圆点，形态区分开，避免整体读成「加号」。
-     配色沿用深色底 + 绿色（#0A0B0D / #32F08C / #239A5D）。 -->
+<!-- AI 聚合网关图标：中心径向发光的「网关核心」，6 个渐变来源节点环绕，
+     由连线汇聚到核心，外围一圈淡淡光晕环。深色底 + 绿色系。
+     全部几何按极坐标生成，最大外径 33.8（< 36 安全区半径）。 -->
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:aapt="http://schemas.android.com/aapt"
     android:width="108dp"
     android:height="108dp"
     android:viewportWidth="108"
     android:viewportHeight="108">
-    <!-- 汇聚连线（暗绿，画在节点之下） -->
+
+    <!-- 外围光晕环（暗绿描边） -->
     <path
-        android:strokeColor="#239A5D"
-        android:strokeWidth="3"
+        android:strokeColor="#1C6E44"
+        android:strokeWidth="1.6"
+        android:fillColor="#00000000"
+        android:pathData="M54.00,23.00 a31.00,31.00 0 1,0 0,62.00 a31.00,31.00 0 1,0 0,-62.00 Z" />
+
+    <!-- 汇聚连线（从核心边缘走向各节点） -->
+    <path
+        android:strokeColor="#2FB673"
+        android:strokeWidth="2.6"
         android:strokeLineCap="round"
-        android:pathData="M54,41 L54,33 M65.26,47.5 L72.19,43.5 M65.26,60.5 L72.19,64.5 M54,67 L54,75 M42.74,60.5 L35.81,64.5 M42.74,47.5 L35.81,43.5" />
-    <!-- 中心网关：26x26 圆角方块 -->
+        android:fillColor="#00000000"
+        android:pathData="M54.00,38.50 L54.00,30.50 M67.42,46.25 L74.35,42.25 M67.42,61.75 L74.35,65.75 M54.00,69.50 L54.00,77.50 M40.58,61.75 L33.65,65.75 M40.58,46.25 L33.65,42.25" />
+
+    <!-- 6 个来源节点（整体线性渐变，上亮下暗） -->
+    <path android:pathData="M54.00,22.20 a4.00,4.00 0 1,0 0,8.00 a4.00,4.00 0 1,0 0,-8.00 Z M78.08,36.10 a4.00,4.00 0 1,0 0,8.00 a4.00,4.00 0 1,0 0,-8.00 Z M78.08,63.90 a4.00,4.00 0 1,0 0,8.00 a4.00,4.00 0 1,0 0,-8.00 Z M54.00,77.80 a4.00,4.00 0 1,0 0,8.00 a4.00,4.00 0 1,0 0,-8.00 Z M29.92,63.90 a4.00,4.00 0 1,0 0,8.00 a4.00,4.00 0 1,0 0,-8.00 Z M29.92,36.10 a4.00,4.00 0 1,0 0,8.00 a4.00,4.00 0 1,0 0,-8.00 Z">
+        <aapt:attr name="android:fillColor">
+            <gradient
+                android:type="linear"
+                android:startX="54" android:startY="24"
+                android:endX="54" android:endY="84"
+                android:startColor="#8CFFC6"
+                android:endColor="#14A15C" />
+        </aapt:attr>
+    </path>
+
+    <!-- 中心核心：径向发光 -->
+    <path android:pathData="M54.00,39.50 a14.50,14.50 0 1,0 0,29.00 a14.50,14.50 0 1,0 0,-29.00 Z">
+        <aapt:attr name="android:fillColor">
+            <gradient
+                android:type="radial"
+                android:centerX="50" android:centerY="48"
+                android:gradientRadius="22"
+                android:startColor="#C6FFE0"
+                android:centerColor="#3FE08C"
+                android:endColor="#12924F" />
+        </aapt:attr>
+    </path>
+
+    <!-- 核心内圈高光环（深底透出，形成「网关核心」质感） -->
     <path
-        android:fillColor="#32F08C"
-        android:pathData="M48,41 L60,41 A7,7 0 0 1 67,48 L67,60 A7,7 0 0 1 60,67 L48,67 A7,7 0 0 1 41,60 L41,48 A7,7 0 0 1 48,41 Z" />
-    <!-- 6 个来源节点（半径 6，距中心 27） -->
-    <path
-        android:fillColor="#32F08C"
-        android:pathData="M48,27 a6,6 0 1,0 12,0 a6,6 0 1,0 -12,0 Z M71.38,40.5 a6,6 0 1,0 12,0 a6,6 0 1,0 -12,0 Z M71.38,67.5 a6,6 0 1,0 12,0 a6,6 0 1,0 -12,0 Z M48,81 a6,6 0 1,0 12,0 a6,6 0 1,0 -12,0 Z M24.62,67.5 a6,6 0 1,0 12,0 a6,6 0 1,0 -12,0 Z M24.62,40.5 a6,6 0 1,0 12,0 a6,6 0 1,0 -12,0 Z" />
+        android:strokeColor="#0A0B0D"
+        android:strokeWidth="2.4"
+        android:fillColor="#00000000"
+        android:pathData="M54.00,46.80 a7.20,7.20 0 1,0 0,14.40 a7.20,7.20 0 1,0 0,-14.40 Z" />
 </vector>
