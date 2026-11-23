@@ -1,5 +1,6 @@
 package dev.aigw.app.ui.providers.loomy
 
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -8,6 +9,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Sms
@@ -135,6 +137,82 @@ object LoomyUi : ProviderUi {
                         Text("登录")
                     }
                 }
+            }
+
+            WechatQrSection(actions)
+        }
+    }
+
+    /** 微信扫码登录区块：生成二维码 → 渲染 → 长轮询 → 落池。 */
+    @Composable
+    private fun WechatQrSection(actions: ProviderUiActions) {
+        var qrBytes by remember { mutableStateOf<ByteArray?>(null) }
+        var statusText by remember { mutableStateOf("") }
+        var loading by remember { mutableStateOf(false) }
+        var done by remember { mutableStateOf(false) }
+
+        SectionCard {
+            SectionLabel("微信扫码登录")
+            Text(
+                text = "用微信扫一扫登录，免手机验证码",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+
+            // 二维码图片：无图片加载库，用 BitmapFactory 解码 JPEG 字节后自绘
+            val image = qrBytes?.let { bytes ->
+                remember(bytes) {
+                    android.graphics.BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
+                        ?.asImageBitmap()
+                }
+            }
+            if (image != null) {
+                Image(
+                    bitmap = image,
+                    contentDescription = "微信登录二维码",
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(vertical = 8.dp),
+                )
+            } else if (loading) {
+                Text(
+                    text = "正在生成二维码…",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(vertical = 8.dp),
+                )
+            }
+
+            if (statusText.isNotEmpty()) {
+                Text(
+                    text = statusText,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = if (done) MaterialTheme.colorScheme.tertiary else MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(vertical = 4.dp),
+                )
+            }
+
+            Button(
+                onClick = {
+                    qrBytes = null
+                    statusText = "正在生成二维码…"
+                    loading = true
+                    done = false
+                    actions.onWechatQr(
+                        id,
+                        { bytes -> qrBytes = bytes; loading = false },
+                        { text -> statusText = text },
+                        { error ->
+                            loading = false
+                            done = error.isEmpty()
+                            if (error.isNotEmpty()) statusText = error
+                        },
+                    )
+                },
+                enabled = !loading,
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Text(if (loading) "生成中…" else "开始微信扫码登录")
             }
         }
     }

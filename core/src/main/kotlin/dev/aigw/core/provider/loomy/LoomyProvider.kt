@@ -61,6 +61,9 @@ class LoomyProvider(
     private val chatClient = LoomyChatClient()
     private val catalog = LoomyModelCatalog(nowMillis = nowMillis)
 
+    /** 微信网页扫码客户端（uuid / 二维码图 / 长轮询）。 */
+    private val wechatClient = LoomyWechatClient()
+
     // ------------------------------------------------------------------ 模型
 
     override fun listModels(account: ProviderAccount?): ProviderModelCatalogView {
@@ -442,6 +445,35 @@ class LoomyProvider(
         // 上游没给 userid 时退回手机号当 uid，账号至少可用且可重复登录覆盖
         val uid = account.uid.ifEmpty { account.phone }
         return toProviderAccount(account.copy(uid = uid, nickname = nickname))
+    }
+
+    // ------------------------------------------------------------------ 微信扫码登录
+
+    /**
+     * 开始一次微信扫码会话：拉 `qrconnect` 页拿 uuid，返回二维码图片地址。
+     *
+     * UI 拿到 [LoomyWechatClient.QrSession] 后渲染二维码（[fetchWechatQrImage]），
+     * 再启动轮询（[pollWechatQr]），拿到 code 后调 [completeWechatLogin]。
+     */
+    fun beginWechatQr(state: String = "loomy"): LoomyWechatClient.QrSession = wechatClient.beginQr(state)
+
+    /** 下载二维码图片字节（JPEG），供 UI 渲染。 */
+    fun fetchWechatQrImage(uuid: String): ByteArray = wechatClient.fetchQrImage(uuid)
+
+    /** 长轮询一次微信扫码状态。 */
+    fun pollWechatQr(uuid: String): LoomyWechatClient.PollResult = wechatClient.pollQr(uuid)
+
+    /**
+     * 用微信授权 code 换 session（复用 [LoomyAuthClient.loginByWechat]），
+     * 并把上游 userid / 昵称补全后转成 [ProviderAccount]。
+     */
+    fun completeWechatLogin(code: String): ProviderAccount {
+        val account = authClient.loginByWechat(code.trim())
+        var nickname = account.nickname
+        if (nickname.isEmpty()) {
+            runCatching { nickname = authClient.nicknameOf(authClient.getUserInfo(account.session)) }
+        }
+        return toProviderAccount(account.copy(nickname = nickname))
     }
 
     // ------------------------------------------------------------------ 工具

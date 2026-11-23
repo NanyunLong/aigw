@@ -38,6 +38,16 @@ class ProviderUiActions(
     val onSmsLogin:
         (providerId: String, phone: String, code: String, ccode: String, onResult: (String) -> Unit) -> Unit =
         { _, _, _, _, _ -> },
+    /**
+     * 微信扫码登录（Loomy）：开始会话 → 渲染二维码 → 长轮询 → 拿 code 换 session 落池。
+     *
+     * 组件负责展示二维码与状态；[onQrBytes] 收到二维码 JPEG 字节（供渲染），
+     * [onStatus] 收进度文案（如「等待扫码」「已扫码，请在手机确认」），
+     * [onDone] 收最终结果（空串=成功，否则为错误信息）。二维码过期后需再次点击重新开始。
+     */
+    val onWechatQr:
+        (providerId: String, onQrBytes: (ByteArray) -> Unit, onStatus: (String) -> Unit, onDone: (String) -> Unit) -> Unit =
+        { _, _, _, _ -> },
     /** 粘贴凭证 JSON 导入。 */
     val onImport: (providerId: String, raw: String) -> Unit = { _, _ -> },
     /** 刷新额度；uid 为空表示刷新该供应商全部账号。 */

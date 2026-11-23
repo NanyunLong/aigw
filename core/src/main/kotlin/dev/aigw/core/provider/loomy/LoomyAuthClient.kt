@@ -73,6 +73,45 @@ class LoomyAuthClient(
     }
 
     /**
+     * 用微信扫码授权 code 换 session。
+     *
+     * 请求体结构逆向自 Loomy2API 1.2.31 `LE1/d;->R()`：
+     *
+     * ```
+     * {"base": {...}, "param": {"tcode": {"code": "<微信 code>"}, "type": "wx"}}
+     * ```
+     *
+     * **实测验证**（2026-11-23）：`tcode` 必须是**嵌套对象 `{code: ...}`**，不能是字符串。
+     * 传字符串返回 `020001 解析请求包错误`；不传或结构不对返回 `010003 请求参数错误`；
+     * 结构正确但 code 已过期时返回 `270101 第三方鉴权失败`——证明该结构已被上游正确解析。
+     */
+    fun loginByWechat(code: String): LoomyAccount {
+        val body = envelope(
+            JsonObject().apply {
+                add("tcode", JsonObject().apply {
+                    addProperty("code", code)
+                })
+                addProperty("type", LoomyConstants.WECHAT_TYPE)
+            },
+        )
+        val data = call(LoomyConstants.PATH_LOGIN_BY_WECHAT, body)
+        val session = data.str("session")
+        if (session.isEmpty()) {
+            throw LoomyApiException(200, LoomyErrorKind.CLIENT, data.toString(), "MISSING_SESSION")
+        }
+        val uid = data.str("userid").ifEmpty { data.str("userId") }
+        val issuedAt = nowMillis()
+        return LoomyAccount(
+            uid = uid,
+            phone = "",
+            session = session,
+            nickname = data.str("nickname"),
+            createdAtMillis = issuedAt,
+            expiresAtMillis = issuedAt + LoomyConstants.SESSION_EXPIRE_SECONDS * 1000L,
+        )
+    }
+
+    /**
      * 查用户信息。
      *
      * 上游字段名未经真实账号验证，所以按多种可能取值，取不到就留空——

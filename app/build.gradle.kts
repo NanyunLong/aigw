@@ -25,6 +25,21 @@ fun keystoreValue(key: String): String =
     keystoreProps.getProperty(key)
         ?: error("缺少签名配置 $key：请检查根目录 keystore.properties")
 
+/**
+ * 探测 keystore 文件格式：JKS/JCEKS 文件头魔数是 FE ED FE ED，否则按 PKCS12 处理。
+ * Android Gradle 插件默认按 PKCS12 读取，若 keystore 实为 JKS
+ * 会抛“Tag number over 30 is not supported”。这里按实际字节头选择 storeType。
+ */
+fun detectStoreType(storeFile: File): String {
+    if (!storeFile.exists()) return "JKS"
+    val head = ByteArray(4)
+    storeFile.inputStream().use { it.read(head) }
+    val isJks = head.size == 4 &&
+        head[0] == 0xFE.toByte() && head[1] == 0xED.toByte() &&
+        head[2] == 0xFE.toByte() && head[3] == 0xED.toByte()
+    return if (isJks) "JKS" else "PKCS12"
+}
+
 android {
     namespace = "dev.aigw.app"
     compileSdk = 37
@@ -47,7 +62,9 @@ android {
         // 本地不产 release 包时不依赖该文件。
         if (hasReleaseKeystore) {
             create("release") {
-                storeFile = file(keystoreValue("storeFile"))
+                val store = file(keystoreValue("storeFile"))
+                storeFile = store
+                storeType = detectStoreType(store)
                 storePassword = keystoreValue("storePassword")
                 keyAlias = keystoreValue("keyAlias")
                 keyPassword = keystoreValue("keyPassword")

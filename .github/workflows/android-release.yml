@@ -30,22 +30,36 @@ jobs:
         with:
           gradle-version: '9.9.1'
 
-      - name: 还原 release keystore
+      # 准备 release 签名：优先用 secrets.KEYSTORE_BASE64；若未配置（fork 不继承父仓库 secrets）
+      # 则现场生成一次性 PKCS12 keystore，避免空文件导致“Tag number over 30”。
+      - name: 准备 release 签名
         env:
           KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
-        run: echo "$KEYSTORE_BASE64" | base64 -d > "$GITHUB_WORKSPACE/release.keystore"
-
-      - name: 生成 keystore.properties
-        env:
           KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
           KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
           KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
         run: |
+          set -e
+          F="$GITHUB_WORKSPACE/release.keystore"
+          SP="${KEYSTORE_PASSWORD:-aigw-release-pass}"
+          AL="${KEY_ALIAS:-androidrelease}"
+          KP="${KEY_PASSWORD:-$SP}"
+          if [ -n "$KEYSTORE_BASE64" ]; then
+            printf '%s' "$KEYSTORE_BASE64" | base64 -d > "$F"
+          else
+            echo "secrets.KEYSTORE_BASE64 未配置，现场生成一次性 PKCS12 keystore"
+            rm -f "$F"
+            keytool -genkeypair -v -keystore "$F" -storetype PKCS12 \
+              -storepass "$SP" -keypass "$KP" -alias "$AL" \
+              -keyalg RSA -keysize 2048 -validity 10000 \
+              -dname "CN=AI Gateway, O=AI Gateway, C=US"
+          fi
+          keytool -list -keystore "$F" -storepass "$SP" >/dev/null
           cat > keystore.properties <<EOF
-          storeFile=$GITHUB_WORKSPACE/release.keystore
-          storePassword=$KEYSTORE_PASSWORD
-          keyAlias=$KEY_ALIAS
-          keyPassword=$KEY_PASSWORD
+          storeFile=$F
+          storePassword=$SP
+          keyAlias=$AL
+          keyPassword=$KP
           EOF
 
       - name: 静态检查
