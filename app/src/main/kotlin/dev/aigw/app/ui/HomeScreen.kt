@@ -216,7 +216,7 @@ private fun HomeWidgetContent(
         HomeWidget.SUMMARY -> UsageSummaryCard(state, openUsage)
         HomeWidget.ACTIONS -> ActionRow(
             onCheckin = { viewModel.checkinAll() },
-            onRefreshCredits = { viewModel.refreshAllCredits() },
+            onRefreshCredits = { viewModel.refreshAllCredits(); viewModel.refreshModels(forceRefresh = true) },
             onOpenTaskCenter = openTaskCenter,
         )
         HomeWidget.LAST_CALL -> RecentCallCard(state, openLogs)

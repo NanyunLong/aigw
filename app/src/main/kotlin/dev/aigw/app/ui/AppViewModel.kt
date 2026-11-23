@@ -508,6 +508,8 @@ class AppViewModel(
         maybeAutoResume()
         // 自动检查更新：默认开启，每天最多一次，失败静默
         maybeAutoCheckUpdate()
+        // 冷启动即拉一次模型目录：首页「聚合模型」与模型页都靠它，否则不进模型页会一直是 0。
+        ensureModelsLoaded()
         // 冷启动也判一次每日签到：被 force-stop 清掉粘性服务时，服务节拍可能整天都没机会跑。
         // 与 GatewayService 侧的巡检共用同一个引擎实例，CAS + 台账保证不会重复。
         viewModelScope.launch(Dispatchers.IO) {

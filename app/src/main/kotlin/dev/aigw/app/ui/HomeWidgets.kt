@@ -705,6 +705,7 @@ private fun ModelsTile(state: AppUiState, modifier: Modifier) {
         BigNumber(state.models.size.toString())
         TileNote(
             when {
+                state.modelsLoading && state.models.isEmpty() -> "正在拉取模型目录…"
                 state.modelsError.isNotEmpty() -> state.modelsError
                 state.models.isEmpty() -> "尚未拉取模型目录"
                 else -> "各供应商模型目录合计"
