@@ -13,7 +13,7 @@ import java.io.File
 
 /**
  * 主界面：WebView 加载内置控制面板（assets/panel.html）。
- * 网关服务随 app 启动自动拉起；面板通过 http://127.0.0.1:8787/api/panel/* 与网关交互。
+ * 网关服务随 app 启动自动拉起；面板通过 http://127.0.0.1:8787/api/panel/ 与网关交互。
  */
 class MainActivity : Activity() {
 
@@ -37,7 +37,7 @@ class MainActivity : Activity() {
             cacheMode = WebSettings.LOAD_NO_CACHE
             mixedContentMode = WebSettings.MIXED_CONTENT_NEVER_ALLOW
         }
-        // 加载内置面板。网关监听 127.0.0.1:8787（同源，面板 JS 直接 /api/panel/*）。
+        // 加载内置面板。网关监听 127.0.0.1:8787（同源，面板 JS 直接 /api/panel/）。
         webView.loadUrl("http://127.0.0.1:8787/panel")
 
         setContentView(webView)

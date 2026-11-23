@@ -594,7 +594,7 @@ class GatewayServer(
         if (token.isNullOrEmpty()) return false to "登录响应里没有 token_field=${up.tokenField}"
         acc.session = token
         acc.lastError = null
-        true to null
+        return true to null
     }
 
     private fun loginByCookie(up: Upstream, acc: UpstreamAccount): Pair<Boolean, String?> {
@@ -639,7 +639,7 @@ class GatewayServer(
         if (token.isNullOrEmpty()) return false to "Set-Cookie 里没有 cookieName=${up.cookieName}"
         acc.session = token
         acc.lastError = null
-        true to null
+        return true to null
     }
 
     /**
