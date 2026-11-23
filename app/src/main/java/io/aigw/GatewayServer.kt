@@ -1,879 +1,436 @@
 package io.aigw
 
-import android.content.Context
 import fi.iki.elonen.NanoHTTPD
-import fi.iki.elonen.NanoHTTPD.IHTTPSession
-import fi.iki.elonen.NanoHTTPD.Response
 import org.json.JSONArray
 import org.json.JSONObject
-import java.io.BufferedWriter
-import java.io.File
-import java.io.OutputStreamWriter
-import java.net.HttpURLConnection
-import java.net.URL
-import java.util.ArrayDeque
-import java.util.concurrent.ConcurrentHashMap
-import java.util.concurrent.atomic.AtomicLong
+import java.io.ByteArrayInputStream
+import java.util.concurrent.atomic.AtomicInteger
 
 /**
- * 网关本体。
+ * 内嵌网关服务器（移植 server.py 的路由逻辑）。
  *
- * 关键安全约束（与 Python 版一致）：
- *  - 客户端 Authorization 不转发给上游；上游 key 只从配置取
- *  - 只接受白名单路径，其余 404
- *  - 上游错误体消毒后才回给客户端
- *  - 日志只记元数据，不落 body
+ * 路由：
+ *  - GET  /panel           → 面板 JSON（Compose 用）
+ *  - GET  /api/panel/state → 面板状态（账号+额度+模型）
+ *  - GET  /api/panel/logs  → 日志
+ *  - GET  /v1/models       → 模型列表
+ *  - POST /v1/chat/completions → OpenAI 兼容（loomy 上游 + 多提供商）
+ *  - POST /v1/messages     → Anthropic 兼容
+ *  - POST /v1/embeddings   → 透传
+ *  - POST /v1/images/generations → 透传
+ *  - POST /api/panel/accounts* → 账号增删改
+ *
+ * 落地页就是面板（/ 和 /panel 都返回面板），照 loomy。
  */
 class GatewayServer(
-    private val ctx: Context,
-    private val cfg: GatewayConfig
-) : NanoHTTPD("127.0.0.1", cfg.port) {
+    private val port: Int,
+    private val pool: AccountPool,
+) : NanoHTTPD(port) {
 
-    companion object {
-        private val PROXY_PATHS = setOf("/v1/chat/completions", "/v1/completions", "/v1/embeddings")
+    private val logBuffer = java.util.concurrent.ConcurrentLinkedDeque<String>()
+    private val logSeq = AtomicInteger(0)
+    private var models: List<Map<String, Any?>> = ModelGateway.fallbackModels()
+
+    fun log(msg: String) {
+        val line = "[${fmtTime(System.currentTimeMillis() / 1000)}] $msg"
+        logBuffer.addLast(line)
+        while (logBuffer.size > 500) logBuffer.pollFirst()
+        println(line)
     }
 
-    /** NanoHTTPD 的 Status 枚举缺 413/429/502，这里补一个实现 IStatus 的通用状态。 */
-    private class SimpleStatus(private val code: Int, private val desc: String) : Response.IStatus {
-        override fun getRequestStatus(): Int = code
-        override fun getDescription(): String = "$code $desc"
-    }
+    // -------------------------------------------------------------- lifecycle
 
-    private fun st(code: Int): Response.IStatus =
-        Response.Status.lookup(code) ?: SimpleStatus(code, "Gateway")
-
-    private val logFile = File(ctx.filesDir, cfg.logPath)
-    private val stateFile = File(ctx.filesDir, "state.json")
-
-    private val lock = Any()
-    private val qpsMarks = ConcurrentHashMap<String, ArrayDeque<Long>>()
-    private var day: String = today()
-    private val tokensUsed = HashMap<String, Long>()
-    private val startedAt = System.currentTimeMillis()
-    private val requestCount = AtomicLong(0)
-    private val errorCount = AtomicLong(0)
-
-    @Volatile
-    var lastError: String? = null
-        private set
-
-    init {
-        loadState()
-    }
-
-    private fun today(): String {
-        val f = java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.US)
-        return f.format(java.util.Date())
-    }
-
-    private fun loadState() {
+    fun startGateway() {
+        pool.load()
+        pool.bootstrap()
         try {
-            if (!stateFile.exists()) return
-            val o = JSONObject(stateFile.readText())
-            if (o.optString("day") == day) {
-                val t = o.optJSONObject("tokens") ?: return
-                for (k in t.keys()) tokensUsed[k] = t.getLong(k)
+            start(NanoHTTPD.SOCKET_READ_TIMEOUT, false)
+            log("网关已启动: 127.0.0.1:$port")
+            refreshModels()
+        } catch (e: Exception) {
+            log("网关启动失败: ${e.message}")
+        }
+    }
+
+    fun refreshModels() {
+        try {
+            val acc = pool.acquire()
+            val payload = ModelGateway.models(acc.effectiveToken())
+            val data = payload.optJSONArray("data")
+            if (data != null && data.length() > 0) {
+                models = (0 until data.length()).map { idx ->
+                    val m = data.getJSONObject(idx)
+                    mapOf("id" to m.optString("id"), "name" to m.optString("name", m.optString("id")),
+                        "multiplier" to m.optDouble("multiplier", 0.0),
+                        "context_length" to m.optLong("context_length", 0L),
+                        "modalities" to listOf("text"))
+                }
+                log("上游模型列表已刷新: ${models.size} 个")
             }
         } catch (e: Exception) {
-            // 读不到就当空预算
+            log("[warn] 拉取模型列表失败，使用内置清单: ${e.message}")
+            models = ModelGateway.fallbackModels()
         }
     }
 
-    private fun saveState() {
-        try {
-            val t = JSONObject()
-            for ((k, v) in tokensUsed) t.put(k, v)
-            stateFile.writeText(JSONObject().put("day", day).put("tokens", t).toString())
-        } catch (e: Exception) {
-        }
-    }
+    private fun catalogue(): List<Map<String, Any?>> = models.ifEmpty { ModelGateway.fallbackModels() }
 
-    fun status(): JSONObject = synchronized(lock) {
-        val t = JSONObject()
-        for ((k, v) in tokensUsed) t.put(k, v)
-        JSONObject()
-            .put("running", true)
-            .put("port", cfg.port)
-            .put("uptimeSec", (System.currentTimeMillis() - startedAt) / 1000)
-            .put("requests", requestCount.get())
-            .put("errors", errorCount.get())
-            .put("day", day)
-            .put("tokens", t)
-            .put("upstreams", JSONArray(cfg.upstreams.keys.toList()))
-            .put("lastError", lastError ?: JSONObject.NULL)
-    }
-
-    // ------------------------------------------------------------ 配额
-
-    private fun auth(token: String?): ClientConf? {
-        if (token.isNullOrEmpty()) return null
-        return cfg.clients[GatewayConfig.sha256(token)]
-    }
-
-    private fun acquire(c: ClientConf): String? = synchronized(lock) {
-        val d = today()
-        if (day != d) {
-            day = d
-            tokensUsed.clear()
-            saveState()
-        }
-        if (!c.enabled) return "key disabled"
-        if (c.dailyTokens > 0 && (tokensUsed[c.id] ?: 0L) >= c.dailyTokens) {
-            return "daily token budget exhausted"
-        }
-        if (c.qps > 0) {
-            val q = qpsMarks.getOrPut(c.id) { ArrayDeque() }
-            val now = System.nanoTime()
-            while (q.isNotEmpty() && now - q.peekFirst() > 1_000_000_000L) q.pollFirst()
-            if (q.size >= c.qps.toInt()) return "rate limit exceeded"
-            q.addLast(now)
-        }
-        null
-    }
-
-    private fun charge(c: ClientConf, tokens: Int) {
-        if (tokens <= 0) return
-        synchronized(lock) {
-            tokensUsed[c.id] = (tokensUsed[c.id] ?: 0L) + tokens
-            saveState()
-        }
-    }
-
-    private fun clampTokens(c: ClientConf, body: JSONObject): Int {
-        var cap = cfg.hardMaxTokens
-        if (c.maxTokens > 0) cap = minOf(cap, c.maxTokens)
-        for (f in listOf("max_tokens", "max_completion_tokens")) {
-            if (body.has(f) && body.optInt(f, 0) > cap) {
-                body.put(f, cap)
-            }
-        }
-        if (cfg.forceDefaultMaxTokens && !body.has("max_tokens") && !body.has("max_completion_tokens")) {
-            body.put("max_tokens", minOf(cfg.defaultMaxTokens, cap))
-        }
-        val eff = if (body.has("max_tokens")) body.optInt("max_tokens", cap)
-        else if (body.has("max_completion_tokens")) body.optInt("max_completion_tokens", cap)
-        else cap
-        return if (eff > 0) eff else cap
-    }
-
-    // ------------------------------------------------------------ 日志
-
-    private fun log(rec: JSONObject) {
-        try {
-            rec.put("ts", System.currentTimeMillis())
-            if (logFile.length() > 8L * 1024 * 1024) {
-                // 简单轮转：超过 8MB 就清空，避免手机存储被日志吃光
-                logFile.writeText("")
-            }
-            logFile.appendText(rec.toString() + "\n")
-        } catch (e: Exception) {
-        }
-    }
-
-    // ------------------------------------------------------------ 路由
-
-    private fun resolve(model: String?): Pair<Upstream, String> {
-        if (!model.isNullOrEmpty() && model.contains("/")) {
-            val head = model.substringBefore("/")
-            val rest = model.substringAfter("/")
-            val up = cfg.upstreams[head]
-            if (up != null && rest.isNotEmpty()) return up to rest
-        }
-        return cfg.upstreams[cfg.defaultUpstream]!! to (model ?: "")
-    }
-
-    // ------------------------------------------------------------ HTTP 入口
+    // -------------------------------------------------------------- NanoHTTPD
 
     override fun serve(session: IHTTPSession): Response {
-        val path = session.uri.split("?")[0]
+        val path = normalizePath(session.uri)
         return try {
             when {
-                path == "/health" || path == "/v1/health" -> json(Response.Status.OK, JSONObject()
-                    .put("ok", true).put("version", BuildConfig.VERSION_NAME))
-
-                path == "/admin/status" -> {
-                    val c = auth(bearer(session))
-                    if (c == null || !c.admin) err(Response.Status.FORBIDDEN, "admin key required")
-                    else json(Response.Status.OK, status())
-                }
-
-                path == "/v1/models" -> {
-                    val c = auth(bearer(session))
-                    if (c == null) err(Response.Status.UNAUTHORIZED, "invalid api key")
-                    else {
-                        acquire(c)?.let { return err(st(429), it) }
-                        val arr = JSONArray()
-                        for ((uid, up) in cfg.upstreams) {
-                            if (!Translate.matchPatterns(c.upstreams, uid)) continue
-                            arr.put(JSONObject().put("id", "$uid/*").put("object", "model")
-                                .put("owned_by", up.type))
-                        }
-                        json(Response.Status.OK, JSONObject().put("object", "list").put("data", arr))
-                    }
-                }
-
-                path == "/panel" || path == "/panel/" -> {
-                    val html = panelHtml()
-                    if (html == null) err(Response.Status.NOT_FOUND, "panel not found")
-                    else {
-                        val b = html.toByteArray(Charsets.UTF_8)
-                        newFixedLengthResponse(Response.Status.OK, "text/html; charset=utf-8", b.inputStream(), b.size.toLong())
-                    }
-                }
-
+                path == "/panel" || path == "/" -> panelPage()
+                path == "/v1/health" || path == "/health" -> health()
+                path == "/v1/models" -> modelsJson()
+                path == "/v1/points" -> pointsJson()
+                path == "/api/panel/state" -> panelState()
+                path == "/api/panel/logs" -> panelLogs()
                 path.startsWith("/api/panel/") -> panelApi(session, path)
-
-                session.method == NanoHTTPD.Method.POST && path in PROXY_PATHS -> handleProxy(session, path)
-
-                else -> err(Response.Status.NOT_FOUND, "not found")
+                path == "/v1/chat/completions" && session.method == Method.POST -> chatCompletions(session)
+                path == "/v1/messages" && session.method == Method.POST -> messages(session)
+                path == "/v1/embeddings" && session.method == Method.POST -> passthrough(session, "embeddings")
+                path == "/v1/images/generations" && session.method == Method.POST -> passthrough(session, "images/generations")
+                else -> json(404, JSONObject().put("error", JSONObject().put("message", "未知路径: $path").put("type", "invalid_request_error").put("code", 404)))
             }
+        } catch (e: PoolError) {
+            json(503, JSONObject().put("error", JSONObject().put("message", e.message).put("type", "account_pool_error").put("code", 503)))
         } catch (e: Exception) {
-            errorCount.incrementAndGet()
-            lastError = e.message
-            err(Response.Status.INTERNAL_ERROR, "gateway internal error")
+            log("[error] ${session.method} ${session.uri}: ${e.message}")
+            json(502, JSONObject().put("error", JSONObject().put("message", "上游调用失败: ${e.message}").put("type", "upstream_error").put("code", 502)))
         }
     }
 
-    private fun bearer(session: IHTTPSession): String? {
-        val raw = session.headers["authorization"]?.trim() ?: return null
-        return if (raw.lowercase().startsWith("bearer ")) raw.substring(7).trim() else raw
+    private fun normalizePath(uri: String): String {
+        var p = uri.split("?")[0]
+        while (p.contains("/v1/v1")) p = p.replace("/v1/v1", "/v1")
+        if (p == "" || p == "/" || p == "/index.html") return "/panel"
+        val exempt = listOf("/panel", "/api/", "/health", "/admin", "/favicon")
+        if (!exempt.any { p.startsWith(it) }) {
+            if (p != "/v1" && !p.startsWith("/v1/")) p = "/v1" + p
+        }
+        return p.trimEnd('/').ifEmpty { "/" }
     }
 
-    // ------------------------------------------------------------ 面板
+    // -------------------------------------------------------------- responses
 
-    /** 从 assets 读内置面板 HTML；读不到返回 null。 */
-    private fun panelHtml(): String? {
-        return try {
-            ctx.assets.open("panel.html").bufferedReader(Charsets.UTF_8).use { it.readText() }
-        } catch (e: Exception) {
-            null
-        }
+    private fun json(status: Int, obj: JSONObject): Response {
+        val body = obj.toString().toByteArray(Charsets.UTF_8)
+        val resp = newFixedLengthResponse(Response.Status.lookup(status), "application/json; charset=utf-8", ByteArrayInputStream(body), body.size.toLong())
+        resp.addHeader("Access-Control-Allow-Origin", "*")
+        return resp
     }
 
-    /** 面板 API：/api/panel/state · upstreams · accounts · sign · logs · clients。 */
-    private fun panelApi(session: IHTTPSession, path: String): Response {
-        return try {
-            when {
-                path == "/api/panel/state" || path == "/api/panel/state/" ->
-                    json(Response.Status.OK, panelState())
-
-                path == "/api/panel/logs" || path == "/api/panel/logs/" ->
-                    panelLogs()
-
-                session.method == NanoHTTPD.Method.POST && path == "/api/panel/upstreams" ->
-                    panelAddUpstream(session)
-
-                session.method == NanoHTTPD.Method.POST && path == "/api/panel/upstreams/remove" ->
-                    panelRemoveUpstream(session)
-
-                session.method == NanoHTTPD.Method.POST && path == "/api/panel/accounts" ->
-                    panelAddAccount(session)
-
-                session.method == NanoHTTPD.Method.POST && path.startsWith("/api/panel/accounts/") ->
-                    panelAccountAction(session, path)
-
-                session.method == NanoHTTPD.Method.POST && path == "/api/panel/clients/update" ->
-                    panelClientUpdate(session)
-
-                session.method == NanoHTTPD.Method.POST && path == "/api/panel/sign" ->
-                    panelSign()
-
-                else -> err(Response.Status.NOT_FOUND, "panel api not found")
-            }
-        } catch (e: Exception) {
-            err(Response.Status.INTERNAL_ERROR, "panel api error: ${e.message}")
-        }
+    private fun panelPage(): Response {
+        val obj = JSONObject()
+        obj.put("ok", true)
+        obj.put("name", "aigw 网关")
+        obj.put("port", port)
+        obj.put("panel", "http://127.0.0.1:$port/panel")
+        obj.put("accounts", pool.snapshot().size)
+        obj.put("usable", pool.usable().size)
+        val body = obj.toString().toByteArray(Charsets.UTF_8)
+        val resp = newFixedLengthResponse(Response.Status.OK, "application/json; charset=utf-8", ByteArrayInputStream(body), body.size.toLong())
+        resp.addHeader("Cache-Control", "no-store")
+        return resp
     }
 
-    private fun panelState(): JSONObject {
-        val upArr = JSONArray()
-        for ((uid, up) in cfg.upstreams) {
-            upArr.put(JSONObject()
-                .put("id", uid)
-                .put("type", up.type)
-                .put("base_url", up.baseUrl)
-                .put("auth_mode", up.authMode)
-                .put("models", if (up.modelsUrl.isNotEmpty()) "登录式" else "静态"))
-        }
-        val clArr = JSONArray()
-        for ((_, cl) in cfg.clients) {
-            clArr.put(JSONObject()
-                .put("id", cl.id)
-                .put("qps", cl.qps)
-                .put("daily_tokens", cl.dailyTokens)
-                .put("max_tokens", cl.maxTokens)
-                .put("admin", cl.admin)
-                .put("enabled", cl.enabled))
-        }
-        return JSONObject()
-            .put("totals", JSONObject()
-                .put("upstreams", cfg.upstreams.size)
-                .put("models", cfg.upstreams.values.count { it.modelsUrl.isNotEmpty() })
-                .put("accounts", accountCount())
-                .put("usable", usableCount())
-                .put("requests", requestCount.get())
-                .put("tokens", tokensUsed.values.sum())
-                .put("errors", errorCount.get()))
-            .put("config", JSONObject()
-                .put("port", cfg.port)
-                .put("upstreams", upArr)
-                .put("clients", clArr))
-            .put("accounts", accountsJson())
+    private fun health(): Response {
+        val obj = JSONObject()
+        obj.put("status", if (pool.usable().isNotEmpty()) "ok" else "degraded")
+        obj.put("name", "aigw")
+        obj.put("accounts", pool.snapshot().size)
+        obj.put("usable_accounts", pool.usable().size)
+        obj.put("models", catalogue().size)
+        obj.put("panel", "http://127.0.0.1:$port/panel")
+        return json(200, obj)
     }
 
-    private fun accountsJson(): JSONArray {
+    private fun modelsJson(): Response {
         val arr = JSONArray()
-        val upList = cfg.upstreams.values.filter { it.hasAccountPool() }
-        for (up in upList) {
-            for (acc in up.accounts) {
-                arr.put(acc.toPanelJson(up.id))
-            }
+        for (m in catalogue()) {
+            val o = JSONObject()
+            o.put("id", m["id"])
+            o.put("name", m["name"])
+            o.put("object", "model")
+            o.put("owned_by", "loomy")
+            arr.put(o)
         }
-        return arr
+        val obj = JSONObject()
+        obj.put("object", "list")
+        obj.put("data", arr)
+        return json(200, obj)
     }
 
-    private fun accountCount(): Int = cfg.upstreams.values.sumOf { it.accounts.size }
-    private fun usableCount(): Int = cfg.upstreams.values.sumOf { up -> up.accounts.count { it.usable() } }
+    private fun pointsJson(): Response {
+        val arr = JSONArray()
+        var total = 0L
+        val seen = HashMap<String, Long>()
+        for (acc in pool.snapshot()) {
+            pool.refreshQuota(acc)
+            val o = JSONObject()
+            o.put("name", acc.name)
+            o.put("userid", acc.userid)
+            o.put("available", acc.available)
+            o.put("balance", acc.balance)
+            o.put("requests", acc.requests)
+            o.put("points_used", acc.pointsUsed)
+            arr.put(o)
+            val key = acc.userid.ifEmpty { acc.name }
+            val avail = acc.available ?: 0L
+            if (avail > 0) seen[key] = maxOf(seen[key] ?: 0, avail)
+        }
+        total = seen.values.sum()
+        val obj = JSONObject()
+        obj.put("total_available", total)
+        obj.put("unique_accounts", seen.size)
+        obj.put("accounts", arr)
+        return json(200, obj)
+    }
+
+    private fun panelState(): Response {
+        val obj = JSONObject()
+        val accounts = JSONArray()
+        for (acc in pool.snapshot()) {
+            val a = JSONObject()
+            a.put("name", acc.name)
+            a.put("provider", acc.provider)
+            a.put("loginid", acc.loginid)
+            a.put("enabled", acc.enabled)
+            a.put("has_password", acc.password.isNotEmpty())
+            a.put("session_days_left", acc.daysLeft()?.let { Math.round(it * 100) / 100.0 })
+            a.put("available", acc.available)
+            a.put("balance", acc.balance)
+            a.put("requests", acc.requests)
+            a.put("failures", acc.failures)
+            a.put("in_cooldown", acc.inCooldown())
+            a.put("last_error", acc.lastError)
+            a.put("source", acc.source)
+            accounts.put(a)
+        }
+        obj.put("accounts", accounts)
+        obj.put("total_available", pool.snapshot().sumOf { it.available ?: 0L })
+        obj.put("models", JSONArray(catalogue().map { it["id"] }))
+        obj.put("port", port)
+        return json(200, obj)
+    }
 
     private fun panelLogs(): Response {
-        val lines = ArrayList<String>()
-        try {
-            if (logFile.exists()) {
-                val all = logFile.readLines()
-                val n = minOf(250, all.size)
-                for (i in all.size - n until all.size) lines.add(all[i])
-            }
-        } catch (e: Exception) {
-        }
-        return json(Response.Status.OK, JSONObject()
-            .put("path", logFile.absolutePath)
-            .put("lines", JSONArray(lines)))
+        val arr = JSONArray()
+        for (line in logBuffer) arr.put(line)
+        val obj = JSONObject()
+        obj.put("logs", arr)
+        return json(200, obj)
     }
 
-    // ---- upstreams ----
+    // -------------------------------------------------------------- panel api
 
-    private fun panelAddUpstream(session: IHTTPSession): Response {
-        val body = readJsonBody(session) ?: return err(Response.Status.BAD_REQUEST, "empty body")
-        val id = body.optString("id", "").trim()
-        if (id.isEmpty()) return err(Response.Status.BAD_REQUEST, "id required")
-        if (cfg.upstreams.containsKey(id)) return err(Response.Status.BAD_REQUEST, "upstream exists: $id")
-        val type = body.optString("type", "openai").lowercase()
-        val base = body.optString("base_url", "").trimEnd('/')
-        val mode = body.optString("auth_mode", "none").lowercase()
-        val key = body.optString("api_key", "")
-        if (!base.startsWith("http")) return err(Response.Status.BAD_REQUEST, "base_url must start with http")
-        if (type !in listOf("openai", "anthropic", "gemini", "ollama", "loomy", "custom"))
-            return err(Response.Status.BAD_REQUEST, "type 不支持：$type")
-        val up = Upstream(
-            id = id, type = type, baseUrl = base, stripV1 = true, timeoutSec = 300,
-            key = key, authMode = mode,
-            loginUrl = body.optString("login_url", ""),
-            usernameField = body.optString("username_field", "username"),
-            passwordField = body.optString("password_field", "password"),
-            tokenField = body.optString("token_field", "token"),
-            cookieUrl = body.optString("cookie_url", ""),
-            cookieName = body.optString("cookie_name", ""),
-            modelsUrl = body.optString("models_url", ""),
-            quotaUrl = body.optString("quota_url", ""),
-            accounts = ArrayList()
-        )
-        cfg.upstreams[id] = up
-        saveConfig()
-        return json(Response.Status.OK, JSONObject().put("ok", true).put("id", id).put("state", panelState()))
-    }
-
-    private fun panelRemoveUpstream(session: IHTTPSession): Response {
-        val body = readJsonBody(session) ?: return err(Response.Status.BAD_REQUEST, "empty body")
-        val id = body.optString("id", "")
-        if (!cfg.upstreams.containsKey(id)) return err(Response.Status.BAD_REQUEST, "upstream not found: $id")
-        if (id == cfg.defaultUpstream) return err(Response.Status.BAD_REQUEST, "cannot remove default upstream")
-        cfg.upstreams.remove(id)
-        saveConfig()
-        return json(Response.Status.OK, JSONObject().put("ok", true).put("state", panelState()))
-    }
-
-    // ---- accounts ----
-
-    private fun panelAddAccount(session: IHTTPSession): Response {
-        val body = readJsonBody(session) ?: return err(Response.Status.BAD_REQUEST, "empty body")
-        val upId = body.optString("upstream", "")
-        val up = cfg.upstreams[upId]
-            ?: return err(Response.Status.BAD_REQUEST, "upstream not found: $upId")
-        if (!up.hasAccountPool()) return err(Response.Status.BAD_REQUEST, "upstream $upId 不支持账号池")
-        val name = body.optString("name", "").trim()
-        if (name.isEmpty()) return err(Response.Status.BAD_REQUEST, "name required")
-        if (up.accounts.any { it.name == name }) return err(Response.Status.BAD_REQUEST, "account exists: $name")
-        val acc = UpstreamAccount(
-            name = name,
-            loginid = body.optString("loginid", ""),
-            password = body.optString("password", ""),
-            session = body.optString("session", ""),
-            enabled = true,
-            upstream = upId
-        )
-        up.accounts.add(acc)
-        val wantLogin = body.optBoolean("login", false)
-        var loggedIn = false
-        var loginErr: String? = null
-        if (wantLogin) {
-            try {
-                val r = loginAccount(up, acc)
-                loggedIn = r.first
-                loginErr = r.second
-            } catch (e: Exception) {
-                loginErr = e.message
-            }
-        }
-        saveConfig()
-        val resp = JSONObject().put("ok", true).put("name", name).put("logged_in", loggedIn)
-        if (loginErr != null) resp.put("error", loginErr)
-        resp.put("state", panelState())
-        return json(Response.Status.OK, resp)
-    }
-
-    private fun panelAccountAction(session: IHTTPSession, path: String): Response {
-        val body = readJsonBody(session) ?: return err(Response.Status.BAD_REQUEST, "empty body")
-        val upId = body.optString("upstream", "")
-        val name = body.optString("name", "")
-        val up = cfg.upstreams[upId] ?: return err(Response.Status.BAD_REQUEST, "upstream not found: $upId")
-        val acc = up.accounts.firstOrNull { it.name == name }
-            ?: return err(Response.Status.BAD_REQUEST, "account not found: $name")
-        when {
-            path.endsWith("/remove") -> up.accounts.remove(acc)
-            path.endsWith("/renew") -> {
-                val r = loginAccount(up, acc)
-                if (!r.first) return err(Response.Status.BAD_REQUEST, r.second ?: "renew failed")
-            }
-            path.endsWith("/toggle") -> {
-                acc.enabled = body.optBoolean("enabled", !acc.enabled)
-            }
-            else -> return err(Response.Status.NOT_FOUND, "unknown action")
-        }
-        saveConfig()
-        return json(Response.Status.OK, JSONObject().put("ok", true).put("state", panelState()))
-    }
-
-    private fun panelClientUpdate(session: IHTTPSession): Response {
-        val body = readJsonBody(session) ?: return err(Response.Status.BAD_REQUEST, "empty body")
-        val id = body.optString("id", "")
-        val cl = cfg.clients.values.firstOrNull { it.id == id }
-            ?: return err(Response.Status.BAD_REQUEST, "client not found: $id")
-        if (body.has("enabled")) {
-            cfg.clients[cl.keyHash] = cl.copy(enabled = body.optBoolean("enabled", cl.enabled))
-            saveConfig()
-        }
-        return json(Response.Status.OK, JSONObject().put("ok", true).put("state", panelState()))
-    }
-
-    // ---- sign ----
-
-    private fun panelSign(): Response {
-        var signed = 0
-        val detail = StringBuilder()
-        for ((upId, up) in cfg.upstreams) {
-            if (up.type != "loomy") continue
-            for (acc in up.accounts) {
-                if (!acc.session.isNullOrEmpty()) {
-                    try {
-                        val r = loomySign(up, acc)
-                        signed++
-                        detail.append("$upId/${acc.name}:${if (r) "ok" else "fail"} ")
-                    } catch (e: Exception) {
-                        detail.append("$upId/${acc.name}:err(${e.message}) ")
+    private fun panelApi(session: IHTTPSession, path: String): Response {
+        val payload = JSONObject(readBody(session))
+        val result = when (path) {
+            "/api/panel/accounts" -> {
+                val name = payload.optString("name", "account${pool.snapshot().size + 1}")
+                val provider = payload.optString("provider", "loomy")
+                val acc = LoomyAccount(
+                    name = name,
+                    loginid = payload.optString("loginid", ""),
+                    password = payload.optString("password", ""),
+                    provider = provider,
+                    token = payload.optString("token", ""),
+                    cookies = payload.optString("cookies", ""),
+                    userid = payload.optString("userid", ""),
+                    expireAt = payload.optLong("expireAt", 0L),
+                )
+                val added = pool.add(acc)
+                if (added) {
+                    // 若是 loomy 且带密码，尝试自动登录拉 session
+                    if (provider == "loomy" && acc.loginid.isNotEmpty() && acc.password.isNotEmpty()) {
+                        try {
+                            LoomyClient().fill(acc)
+                            pool.save(true)
+                        } catch (e: Exception) {
+                            acc.lastError = e.message ?: "login failed"
+                        }
                     }
+                    JSONObject().put("ok", true).put("result", acc.publicDict())
+                } else {
+                    JSONObject().put("ok", false).put("error", "账号已存在")
                 }
             }
-        }
-        return json(Response.Status.OK, JSONObject()
-            .put("ok", true).put("signed", signed).put("detail", detail.toString().trim()))
-    }
-
-    private fun saveConfig() {
-        // 就地回写 config.json，保持配置与内存一致（面板改完即生效）
-        try {
-            val f = File(ctx.filesDir, "config.json")
-            val root = JSONObject()
-            root.put("listen", JSONObject().put("host", cfg.host).put("port", cfg.port))
-            root.put("allow_public_listen", cfg.allowPublicListen)
-            val upArr = JSONArray()
-            for ((id, up) in cfg.upstreams) {
-                upArr.put(up.toJson())
+            "/api/panel/accounts/remove" -> {
+                val name = payload.optString("name", "")
+                JSONObject().put("ok", pool.remove(name))
             }
-            root.put("upstreams", upArr)
-            root.put("default_upstream", cfg.defaultUpstream)
-            root.put("limits", JSONObject()
-                .put("max_body_bytes", cfg.maxBodyBytes)
-                .put("max_response_bytes", cfg.maxResponseBytes)
-                .put("hard_max_tokens", cfg.hardMaxTokens)
-                .put("default_max_tokens", cfg.defaultMaxTokens)
-                .put("force_default_max_tokens", cfg.forceDefaultMaxTokens))
-            root.put("sanitize_errors", cfg.sanitizeErrors)
-            root.put("allow_anonymous", cfg.allowAnonymous)
-            root.put("logging", JSONObject().put("path", cfg.logPath).put("log_body", cfg.logBody))
-            val clArr = JSONArray()
-            for ((_, cl) in cfg.clients) {
-                clArr.put(JSONObject()
-                    .put("id", cl.id)
-                    .put("key_sha256", cl.keyHash)
-                    .put("qps", cl.qps)
-                    .put("daily_tokens", cl.dailyTokens)
-                    .put("max_tokens", cl.maxTokens)
-                    .put("models", JSONArray(cl.models))
-                    .put("upstreams", JSONArray(cl.upstreams))
-                    .put("admin", cl.admin)
-                    .put("enabled", cl.enabled))
+            "/api/panel/refresh" -> {
+                for (acc in pool.snapshot()) pool.refreshQuota(acc)
+                pool.save(true)
+                JSONObject().put("ok", true)
             }
-            root.put("clients", clArr)
-            f.writeText(root.toString(2), Charsets.UTF_8)
-        } catch (e: Exception) {
-        }
-    }
-
-    private fun readJsonBody(session: IHTTPSession): JSONObject? {
-        return try {
-            val map = HashMap<String, String>()
-            session.parseBody(map)
-            val raw = map["postData"] ?: return null
-            if (raw.isEmpty()) return null
-            JSONObject(raw)
-        } catch (e: Exception) {
-            null
-        }
-    }
-
-    // ------------------------------------------------------------ 登录式上游
-
-    /**
-     * 登录一个账号。返回 (是否成功, 错误信息)。
-     * mode=password: POST login_url 带 {username_field, password_field}，取 token_field 作为 session。
-     * mode=cookie: GET cookie_url，从 Set-Cookie 提取 cookieName 作为 session。
-     * mode=apikey: 直接用 acc.password 作为 session（或 up.key）。
-     */
-    private fun loginAccount(up: Upstream, acc: UpstreamAccount): Pair<Boolean, String?> {
-        return try {
-            when (up.authMode) {
-                "password" -> loginByPassword(up, acc)
-                "cookie" -> loginByCookie(up, acc)
-                "apikey" -> {
-                    acc.session = acc.password.ifEmpty { up.key }
-                    true to null
+            "/api/panel/accounts/renew" -> {
+                val name = payload.optString("name", "")
+                val acc = pool.get(name)
+                if (acc != null) {
+                    try {
+                        LoomyClient().fill(acc)
+                        pool.save(true)
+                        JSONObject().put("ok", true).put("result", acc.publicDict())
+                    } catch (e: Exception) {
+                        JSONObject().put("ok", false).put("error", e.message)
+                    }
+                } else {
+                    JSONObject().put("ok", false).put("error", "账号不存在")
                 }
-                else -> false to "auth mode none 无需登录"
             }
-        } catch (e: Exception) {
-            acc.lastError = e.message
-            false to e.message
+            else -> JSONObject().put("ok", false).put("error", "未知面板接口: $path")
         }
+        return json(200, result)
     }
 
-    private fun loginByPassword(up: Upstream, acc: UpstreamAccount): Pair<Boolean, String?> {
-        if (up.loginUrl.isEmpty()) return false to "login_url 未配置"
-        val url = if (up.loginUrl.startsWith("http")) up.loginUrl
-        else up.baseUrl.trimEnd('/') + "/" + up.loginUrl.trimStart('/')
-        val conn = URL(url).openConnection() as HttpURLConnection
-        conn.requestMethod = "POST"
-        conn.connectTimeout = 15000
-        conn.readTimeout = up.timeoutSec * 1000
-        conn.doOutput = true
-        conn.setRequestProperty("Content-Type", "application/json")
-        conn.setRequestProperty("Accept", "application/json")
-        val payload = JSONObject()
-            .put(up.usernameField, acc.loginid)
-            .put(up.passwordField, acc.password)
-            .toString()
-        conn.outputStream.use { it.write(payload.toByteArray(Charsets.UTF_8)) }
-        val code = conn.responseCode
-        if (code !in 200..299) {
-            val msg = try { conn.errorStream?.readBytes()?.toString(Charsets.UTF_8)?.take(200) } catch (e: Exception) { null }
-            return false to "login HTTP $code ${msg ?: ""}"
-        }
-        val raw = conn.inputStream.readBytes().toString(Charsets.UTF_8)
-        val obj = try { JSONObject(raw) } catch (e: Exception) { null }
-        val token = obj?.optString(up.tokenField, "")
-            ?: (obj?.optJSONObject("data")?.optString(up.tokenField, "") ?: "")
-        if (token.isNullOrEmpty()) return false to "登录响应里没有 token_field=${up.tokenField}"
-        acc.session = token
-        acc.lastError = null
-        return true to null
-    }
+    // -------------------------------------------------------------- chat core
 
-    private fun loginByCookie(up: Upstream, acc: UpstreamAccount): Pair<Boolean, String?> {
-        if (up.cookieUrl.isEmpty()) return false to "cookie_url 未配置"
-        val url = if (up.cookieUrl.startsWith("http")) up.cookieUrl
-        else up.baseUrl.trimEnd('/') + "/" + up.cookieUrl.trimStart('/')
-        val conn = URL(url).openConnection() as HttpURLConnection
-        conn.requestMethod = "GET"
-        conn.connectTimeout = 15000
-        conn.readTimeout = up.timeoutSec * 1000
-        conn.doInput = true
-        conn.setRequestProperty("Accept", "application/json")
-        // 带账号密码做基本认证（可选），或依赖 URL
-        if (acc.loginid.isNotEmpty()) {
-            val basic = android.util.Base64.encodeToString(
-                "${acc.loginid}:${acc.password}".toByteArray(Charsets.UTF_8),
-                android.util.Base64.NO_WRAP)
-            conn.setRequestProperty("Authorization", "Basic $basic")
-        }
-        val code = conn.responseCode
-        if (code !in 200..299) {
-            val msg = try { conn.errorStream?.readBytes()?.toString(Charsets.UTF_8)?.take(200) } catch (e: Exception) { null }
-            return false to "cookie HTTP $code ${msg ?: ""}"
-        }
-        // 找 Set-Cookie 里 cookieName 的值
-        val cookies = conn.headerFields?.get("Set-Cookie") ?: emptyList()
-        var token: String? = null
-        for (c in cookies) {
-            if (c.startsWith("${up.cookieName}=")) {
-                token = c.substringAfter("=").substringBefore(";")
+    private fun chatCompletions(session: IHTTPSession): Response {
+        val req = JSONObject(readBody(session))
+        val model = resolveModel(req.optString("model", ""))
+        val stream = req.optBoolean("stream", false)
+        req.put("model", model)
+
+        if (stream) return chatStream(req)
+
+        val tried = mutableListOf<String>()
+        var lastStatus = 502
+        var lastBody = "{}"
+        for (i in 0..2) {
+            try {
+                val acc = pool.acquire(exclude = tried)
+                tried.add(acc.name)
+                val started = System.currentTimeMillis()
+                val (status, body) = ModelGateway.call(acc.effectiveToken(), "chat/completions", req)
+                if (status == 200) {
+                    pool.reportSuccess(acc)
+                    log("[call] ${acc.name} $model ${(System.currentTimeMillis() - started) / 1000.0}s http=200")
+                    return json(200, JSONObject(body))
+                }
+                lastStatus = status
+                lastBody = body
+                if (status == 401 || status == 403 || status == 429) {
+                    pool.reportFailure(acc, status, body)
+                }
+                if (status == 400 || status == 404 || status == 422) break
+            } catch (e: PoolError) {
+                log("[warn] ${e.message}")
                 break
             }
         }
-        // 有的平台把 cookie 放在响应体 JSON
-        if (token.isNullOrEmpty()) {
+        return try {
+            json(lastStatus, JSONObject(lastBody))
+        } catch (e: Exception) {
+            json(lastStatus, JSONObject().put("error", JSONObject().put("message", lastBody.take(300)).put("type", "upstream_error").put("code", lastStatus)))
+        }
+    }
+
+    private fun chatStream(req: JSONObject): Response {
+        // 流式：转发给上游 SSE，逐行透传
+        val tried = mutableListOf<String>()
+        var lastStatus = 502
+        var lastBody = "{}"
+        for (i in 0..2) {
             try {
-                val raw = conn.inputStream.readBytes().toString(Charsets.UTF_8)
-                val obj = JSONObject(raw)
-                token = obj.optString(up.cookieName, "")
-            } catch (e: Exception) { }
-        }
-        if (token.isNullOrEmpty()) return false to "Set-Cookie 里没有 cookieName=${up.cookieName}"
-        acc.session = token
-        acc.lastError = null
-        return true to null
-    }
-
-    /**
-     * loomy 一键签到：GET baseUrl + /points/activation 和 /points/first-login。
-     * 已反编译确认：纯 GET + session 头（Authorization: Bearer <session>, token: <session>），无需 body。
-     */
-    private fun loomySign(up: Upstream, acc: UpstreamAccount): Boolean {
-        val base = up.baseUrl.trimEnd('/')
-        for (ep in listOf("/points/activation", "/points/first-login")) {
-            val conn = URL(base + ep).openConnection() as HttpURLConnection
-            conn.requestMethod = "GET"
-            conn.connectTimeout = 15000
-            conn.readTimeout = 30000
-            conn.setRequestProperty("Accept", "application/json")
-            conn.setRequestProperty("Content-Type", "application/json")
-            if (!acc.session.isNullOrEmpty()) {
-                conn.setRequestProperty("Authorization", "Bearer ${acc.session}")
-                conn.setRequestProperty("token", acc.session)
+                val acc = pool.acquire(exclude = tried)
+                tried.add(acc.name)
+                val sr = ModelGateway.openStream(acc.effectiveToken(), "chat/completions", req)
+                if (sr.status == 200 && sr.input != null) {
+                    pool.reportSuccess(acc)
+                    val resp = newChunkedResponse(Response.Status.OK, "text/event-stream", sr.input)
+                    resp.addHeader("Access-Control-Allow-Origin", "*")
+                    resp.addHeader("Cache-Control", "no-cache")
+                    return resp
+                }
+                lastStatus = sr.status
+                lastBody = sr.errorBody ?: "{}"
+                if (sr.status == 401 || sr.status == 403 || sr.status == 429) {
+                    pool.reportFailure(acc, sr.status, lastBody)
+                }
+            } catch (e: PoolError) {
+                log("[warn] ${e.message}")
+                break
             }
-            conn.setRequestProperty("loomy-version", "0.9.38")
-            val code = conn.responseCode
-            if (code !in 200..299) return false
         }
-        return true
+        return json(lastStatus, JSONObject().put("error", JSONObject().put("message", lastBody.take(300)).put("type", "upstream_error").put("code", lastStatus)))
     }
 
-    private fun handleProxy(session: IHTTPSession, path: String): Response {
-        val c = auth(bearer(session))
-        if (c == null) return err(Response.Status.UNAUTHORIZED, "invalid api key")
-        acquire(c)?.let { return err(st(429), it) }
+    private fun messages(session: IHTTPSession): Response {
+        // Anthropic 兼容：把 /v1/messages 转成 loomy 的 chat/completions 再透传
+        val req = JSONObject(readBody(session))
+        val model = resolveModel(req.optString("model", ""))
+        val messages = req.optJSONArray("messages") ?: JSONArray()
+        // 简化的转换：system 提出来，messages 直接映射
+        val oaiMessages = JSONArray()
+        for (i in 0 until messages.length()) {
+            val m = messages.getJSONObject(i)
+            val role = m.optString("role", "user")
+            val content = m.opt("content")
+            val oai = JSONObject()
+            oai.put("role", if (role == "assistant") "assistant" else "user")
+            oai.put("content", if (content is JSONArray) {
+                // 数组内容（多段）提取文本
+                val sb = StringBuilder()
+                for (j in 0 until content.length()) {
+                    val seg = content.getJSONObject(j)
+                    if (seg.optString("type") == "text") sb.append(seg.optString("text"))
+                }
+                sb.toString()
+            } else content.toString())
+            oaiMessages.put(oai)
+        }
+        val oaiReq = JSONObject()
+        oaiReq.put("model", model)
+        oaiReq.put("messages", oaiMessages)
+        oaiReq.put("stream", req.optBoolean("stream", false))
+        if (req.has("max_tokens")) oaiReq.put("max_tokens", req.optInt("max_tokens"))
 
-        val bodyBytes = HashMap<String, String>()
         try {
-            session.parseBody(bodyBytes)
-        } catch (e: Exception) {
-            return err(Response.Status.BAD_REQUEST, "cannot read body")
-        }
-        val raw = bodyBytes["postData"] ?: return err(Response.Status.BAD_REQUEST, "empty body")
-        if (raw.toByteArray(Charsets.UTF_8).size > cfg.maxBodyBytes) {
-            return err(st(413), "request body too large")
-        }
-        val body = try { JSONObject(raw) } catch (e: Exception) {
-            return err(Response.Status.BAD_REQUEST, "request body must be a JSON object")
-        }
-
-        val model = body.optString("model", "")
-        val (up, modelOut) = resolve(model)
-        if (!Translate.matchPatterns(c.upstreams, up.id)) {
-            return err(Response.Status.FORBIDDEN, "upstream not allowed for this key")
-        }
-        if (!Translate.matchPatterns(c.models, model)) {
-            return err(Response.Status.FORBIDDEN, "model not allowed for this key")
-        }
-
-        val effMax = clampTokens(c, body)
-        val stream = body.optBoolean("stream", false)
-        val t0 = System.currentTimeMillis()
-        requestCount.incrementAndGet()
-
-        val translate = up.type != "openai" && path == "/v1/chat/completions"
-
-        return try {
-            if (translate) proxyTranslated(session, path, body, model, modelOut, up, c, stream, effMax, t0)
-            else proxyRaw(session, path, body, model, modelOut, up, c, stream, t0)
-        } catch (e: Exception) {
-            errorCount.incrementAndGet()
-            lastError = e.message
-            log(JSONObject().put("client", c.id).put("up", up.id).put("model", model)
-                .put("status", 502).put("ms", System.currentTimeMillis() - t0)
-                .put("error", e.message ?: ""))
-            err(st(502), "upstream unreachable")
-        }
-    }
-
-    // ------------------------------------------------------------ 直通
-
-    private fun proxyRaw(
-        session: IHTTPSession, path: String, body: JSONObject, model: String, modelOut: String,
-        up: Upstream, c: ClientConf, stream: Boolean, t0: Long
-    ): Response {
-        val url = if (stream) Translate.streamUrlFor(up, path, modelOut)
-        else Translate.urlFor(up, path, modelOut)
-        val conn = open(url, up, "POST")
-
-        val payload = body.toString().toByteArray(Charsets.UTF_8)
-        conn.outputStream.use { it.write(payload) }
-
-        val code = conn.responseCode
-        if (code !in 200..299) {
-            val msg = sanitize(code, conn.errorStream)
-            log(JSONObject().put("client", c.id).put("up", up.id).put("model", model)
-                .put("status", code).put("ms", System.currentTimeMillis() - t0))
-            errorCount.incrementAndGet()
-            lastError = "upstream $code"
-            return err(st(code), msg)
-        }
-
-        if (!stream) {
-            val out = conn.inputStream.readBytes()
-            val (pt, ct) = usageFrom(out)
-            charge(c, pt + ct)
-            log(JSONObject().put("client", c.id).put("up", up.id).put("model", model)
-                .put("status", code).put("ms", System.currentTimeMillis() - t0)
-                .put("prompt_tokens", pt).put("completion_tokens", ct))
-            return newFixedLengthResponse(Response.Status.OK,
-                "application/json; charset=utf-8", out.inputStream(), out.size.toLong())
-        }
-
-        // 流式：把上游 SSE 直接透传（openai 类型无需改写），顺便统计 usage
-        val resp = newChunkedResponse(Response.Status.OK, "text/event-stream; charset=utf-8", conn.inputStream)
-        resp.addHeader("Cache-Control", "no-cache")
-        resp.addHeader("X-Accel-Buffering", "no")
-        log(JSONObject().put("client", c.id).put("up", up.id).put("model", model)
-            .put("status", 200).put("stream", true).put("ms", System.currentTimeMillis() - t0))
-        return resp
-    }
-
-    // ------------------------------------------------------------ 转译
-
-    private fun proxyTranslated(
-        session: IHTTPSession, path: String, body: JSONObject, model: String, modelOut: String,
-        up: Upstream, c: ClientConf, stream: Boolean, effMax: Int, t0: Long
-    ): Response {
-        val outBody = Translate.buildBody(up, body, modelOut, stream, effMax)
-        val url = if (stream) Translate.streamUrlFor(up, path, modelOut)
-        else Translate.urlFor(up, path, modelOut)
-        val conn = open(url, up, "POST")
-        conn.outputStream.use { it.write(outBody.toString().toByteArray(Charsets.UTF_8)) }
-
-        val code = conn.responseCode
-        if (code !in 200..299) {
-            val msg = sanitize(code, conn.errorStream)
-            log(JSONObject().put("client", c.id).put("up", up.id).put("model", model)
-                .put("status", code).put("translated", up.type)
-                .put("ms", System.currentTimeMillis() - t0))
-            errorCount.incrementAndGet()
-            lastError = "upstream $code ($up.type)"
-            return err(st(code), msg)
-        }
-
-        if (!stream) {
-            val raw = conn.inputStream.readBytes().toString(Charsets.UTF_8)
-            val obj = try { JSONObject(raw) } catch (e: Exception) {
-                return err(st(502), "upstream response not parseable")
+            val acc = pool.acquire()
+            val (status, body) = ModelGateway.call(acc.effectiveToken(), "chat/completions", oaiReq)
+            if (status == 200) {
+                pool.reportSuccess(acc)
+                return json(200, JSONObject(body))
             }
-            val out = Translate.parse(up, obj, model)
-            val u = out.optJSONObject("usage")
-            charge(c, (u?.optInt("total_tokens", 0) ?: 0))
-            log(JSONObject().put("client", c.id).put("up", up.id).put("model", model)
-                .put("status", 200).put("translated", up.type)
-                .put("ms", System.currentTimeMillis() - t0))
-            val bytes = out.toString().toByteArray(Charsets.UTF_8)
-            return newFixedLengthResponse(Response.Status.OK,
-                "application/json; charset=utf-8", bytes.inputStream(), bytes.size.toLong())
+            pool.reportFailure(acc, status, body)
+            return json(status, JSONObject().put("error", JSONObject().put("message", body.take(300)).put("type", "upstream_error").put("code", status)))
+        } catch (e: PoolError) {
+            return json(503, JSONObject().put("error", JSONObject().put("message", e.message).put("type", "account_pool_error").put("code", 503)))
         }
+    }
 
-        // 流式：需要边读边翻译成 OpenAI SSE，用管道线程
-        val pipeIn = java.io.PipedInputStream(64 * 1024)
-        val pipeOut = java.io.PipedOutputStream(pipeIn)
-        val writer = BufferedWriter(OutputStreamWriter(pipeOut, Charsets.UTF_8))
-        val connRef = conn
-
-        Thread {
-            try {
-                val (pt, ct) = Translate.streamToOpenAi(up, connRef.inputStream, writer, model)
-                charge(c, pt + ct)
-                log(JSONObject().put("client", c.id).put("up", up.id).put("model", model)
-                    .put("status", 200).put("translated", up.type).put("stream", true)
-                    .put("prompt_tokens", pt).put("completion_tokens", ct)
-                    .put("ms", System.currentTimeMillis() - t0))
-            } catch (e: Exception) {
-                errorCount.incrementAndGet()
-                lastError = e.message
-            } finally {
-                try { writer.flush() } catch (e: Exception) {}
-                try { pipeOut.close() } catch (e: Exception) {}
-                try { connRef.disconnect() } catch (e: Exception) {}
+    private fun passthrough(session: IHTTPSession, suffix: String): Response {
+        val raw = readBody(session)
+        val payload = if (raw.isNotEmpty()) JSONObject(raw) else JSONObject()
+        try {
+            val acc = pool.acquire()
+            val (status, body) = ModelGateway.call(acc.effectiveToken(), suffix, payload)
+            if (status in 200..299) {
+                pool.reportSuccess(acc)
+                return json(status, JSONObject(body))
             }
-        }.start()
-
-        val resp = newChunkedResponse(Response.Status.OK, "text/event-stream; charset=utf-8", pipeIn)
-        resp.addHeader("Cache-Control", "no-cache")
-        resp.addHeader("X-Accel-Buffering", "no")
-        return resp
-    }
-
-    // ------------------------------------------------------------ 工具
-
-    private fun open(url: String, up: Upstream, method: String): HttpURLConnection {
-        val conn = URL(url).openConnection() as HttpURLConnection
-        conn.requestMethod = method
-        conn.connectTimeout = 15000
-        conn.readTimeout = up.timeoutSec * 1000
-        conn.doOutput = true
-        conn.setRequestProperty("Content-Type", "application/json")
-        conn.setRequestProperty("Accept", "application/json")
-        when (up.type) {
-            "anthropic" -> {
-                conn.setRequestProperty("anthropic-version", "2023-06-01")
-                if (up.key.isNotEmpty()) conn.setRequestProperty("x-api-key", up.key)
-            }
-            "gemini" -> if (up.key.isNotEmpty()) conn.setRequestProperty("x-goog-api-key", up.key)
-            "ollama" -> if (up.key.isNotEmpty()) conn.setRequestProperty("Authorization", "Bearer ${up.key}")
-            else -> if (up.key.isNotEmpty()) conn.setRequestProperty("Authorization", "Bearer ${up.key}")
-        }
-        return conn
-    }
-
-    private fun sanitize(code: Int, stream: java.io.InputStream?): String {
-        if (cfg.sanitizeErrors) return "upstream error (status $code)"
-        return try {
-            stream?.readBytes()?.toString(Charsets.UTF_8)?.take(800) ?: "upstream error (status $code)"
-        } catch (e: Exception) {
-            "upstream error (status $code)"
+            pool.reportFailure(acc, status, body)
+            return json(status, JSONObject().put("error", JSONObject().put("message", body.take(300)).put("type", "upstream_error").put("code", status)))
+        } catch (e: PoolError) {
+            return json(503, JSONObject().put("error", JSONObject().put("message", e.message).put("type", "account_pool_error").put("code", 503)))
         }
     }
 
-    private fun usageFrom(raw: ByteArray): Pair<Int, Int> {
-        return try {
-            val o = JSONObject(raw.toString(Charsets.UTF_8))
-            val u = o.optJSONObject("usage") ?: JSONObject()
-            u.optInt("prompt_tokens", 0) to u.optInt("completion_tokens", 0)
-        } catch (e: Exception) {
-            (raw.size / 4) to 0
-        }
+    private fun resolveModel(requested: String): String {
+        var name = requested.trim()
+        if (name.contains("/")) name = name.substringAfter("/")
+        return name.ifEmpty { LoomyConstants.DEFAULT_MODEL }
     }
 
-    private fun json(status: Response.IStatus, o: JSONObject): Response {
-        val b = o.toString().toByteArray(Charsets.UTF_8)
-        return newFixedLengthResponse(status, "application/json; charset=utf-8", b.inputStream(), b.size.toLong())
-    }
-
-    private fun err(status: Response.IStatus, msg: String): Response {
-        errorCount.incrementAndGet()
-        return json(status, JSONObject().put("error", JSONObject().put("message", msg)))
+    private fun readBody(session: IHTTPSession): String {
+        val length = session.headers["content-length"]?.toLongOrNull() ?: 0L
+        if (length == 0L) return ""
+        val buffer = ByteArray(length.toInt())
+        session.inputStream.read(buffer)
+        return String(buffer, Charsets.UTF_8)
     }
 }
