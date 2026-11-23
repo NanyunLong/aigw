@@ -18,13 +18,13 @@ class UpdateRepositoryTest {
     private val releaseJson = """
         {
           "tag_name": "v2.13.0",
-          "html_url": "https://github.com/xibai6668/Android-AI-gateway/releases/tag/v2.13.0",
+          "html_url": "https://github.com/NanyunLong/aigw/releases/tag/v2.13.0",
           "body": "## 更新内容\n- 多线程下载",
           "assets": [
             {"name": "ai-gateway-2.13.0-release.apk", "size": 1657350,
-             "browser_download_url": "https://github.com/xibai6668/Android-AI-gateway/releases/download/v2.13.0/ai-gateway-2.13.0-release.apk"},
+             "browser_download_url": "https://github.com/NanyunLong/aigw/releases/download/v2.13.0/ai-gateway-2.13.0-release.apk"},
             {"name": "checksums.txt", "size": 120,
-             "browser_download_url": "https://github.com/xibai6668/Android-AI-gateway/releases/download/v2.13.0/checksums.txt"}
+             "browser_download_url": "https://github.com/NanyunLong/aigw/releases/download/v2.13.0/checksums.txt"}
           ]
         }
     """.trimIndent()
@@ -35,7 +35,7 @@ class UpdateRepositoryTest {
         assertEquals("2.13.0", info.version)
         assertEquals(1_657_350L, info.apkSize)
         assertEquals(
-            "https://github.com/xibai6668/Android-AI-gateway/releases/download/v2.13.0/ai-gateway-2.13.0-release.apk",
+            "https://github.com/NanyunLong/aigw/releases/download/v2.13.0/ai-gateway-2.13.0-release.apk",
             info.apkUrl,
         )
         assertTrue(info.notes.contains("多线程下载"))
