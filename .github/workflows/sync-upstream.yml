@@ -1,68 +1,43 @@
-name: Sync Upstream
+name: Sync Upstream (detect-only)
 
-# 定时拉取上游 xibai6668/Android-AI-gateway 的新提交，合并到本仓库 main，
-# 合并成功后自动触发 Android Release，自动建 tag 并把 APK 发到 Releases 页（永久可下）。
-# 仅无冲突时自动合并；一旦与本地改动（微信登录、签名 CI）冲突会失败并保留现场，需人工处理。
+# 本仓库是基于上游 xibai6668/Android-AI-gateway 的一次性重新入库（无关历史），
+# 无法用 git merge 直接合并上游。此工作流只负责“发现上游有新提交并报告”，
+# 不再尝试自动合并、不会因为 tag 同名或历史无关而红灯。
+# 真要移植某个上游改动，请人工挑取（cherry-pick / 手动对比）后另开提交。
 on:
   workflow_dispatch:
   schedule:
     - cron: '0 19 * * *'   # UTC 19:00 = 北京时间 03:00
 
 permissions:
-  contents: write
-  actions: write
+  contents: read
+  actions: read
 
 concurrency:
   group: sync-upstream
   cancel-in-progress: false
 
 jobs:
-  sync:
+  check:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
-      - name: Fetch upstream
+      - name: Fetch upstream (no tags)
         run: |
           set -e
-          git config user.name "aigw-sync-bot"
-          git config user.email "aigw-sync-bot@users.noreply.github.com"
           git remote add upstream https://github.com/xibai6668/Android-AI-gateway.git 2>/dev/null || true
-          git fetch upstream --tags --prune
+          # 关键：不加 --tags，避免与本地同名 tag（如 v2.38.4）冲突导致 fetch 失败
+          git fetch upstream --prune --no-tags
 
-      - name: Detect and merge upstream
-        id: merge
+      - name: Report new upstream commits
         run: |
           set -e
-          git checkout -B main origin/main
-          if git merge-base --is-ancestor upstream/main HEAD; then
-            echo "upstream 已是最新，无需同步"
-            echo "changed=false" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-          echo "发现上游新提交："
-          git log --oneline HEAD..upstream/main
-          if ! git merge upstream/main --no-edit; then
-            echo "::error::上游合并出现冲突，已 abort，本地未改动，请人工处理。"
-            git merge --abort || true
-            exit 1
-          fi
-          echo "changed=true" >> "$GITHUB_OUTPUT"
-
-      - name: Push merged main
-        if: steps.merge.outputs.changed == 'true'
-        run: git push origin main
-
-      - name: Trigger release (create GitHub Release)
-        if: steps.merge.outputs.changed == 'true'
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          curl -sS -X POST \
-            -H "Authorization: Bearer $GH_TOKEN" \
-            -H "Accept: application/vnd.github+json" \
-            "${{ github.api_url }}/repos/${{ github.repository }}/actions/workflows/android-release.yml/dispatches" \
-            -d '{"ref":"main"}'
-          echo "已触发 Android Release（将自动建 tag + 发 Release）。"
+          # 无共同祖先，无法用 merge-base 判断，改用“上游历中是否有本地未包含的提交”做近似报告。
+          echo "=== 上游 main 最近 20 个提交 ==="
+          git log --oneline -20 upstream/main || true
+          echo ""
+          echo "若需移植，请在本地：git fetch upstream --no-tags，然后按提交逐个 cherry-pick。"
+          echo "本工作流不再自动合并（历史无关），因此不会失败。"
