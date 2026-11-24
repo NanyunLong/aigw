@@ -29,6 +29,7 @@ import dev.aigw.core.provider.RoutedModel
 import dev.aigw.core.provider.SmsLoginSupport
 import dev.aigw.core.provider.WebLoginSupport
 import dev.aigw.core.provider.WebLoginTicket
+import dev.aigw.core.provider.WebViewExtractSupport
 import dev.aigw.core.provider.antigravity.AntigravityProvider
 import dev.aigw.core.provider.custom.CustomProvider
 import dev.aigw.core.provider.loomy.LoomyProvider
@@ -1418,6 +1419,23 @@ class GatewayEngine(
             ?: return LoginOutcome(LoginState.FAILED, error = "该供应商不支持网页登录")
         return try {
             val account = support.completeWebLogin(callbackUrl)
+            adopt(providerId, account, "登录")
+        } catch (e: Exception) {
+            logWarn("登录失败（$providerId）：${e.message}")
+            LoginOutcome(LoginState.FAILED, error = e.message ?: "登录失败")
+        }
+    }
+
+    /** 内置 WebView 提取型登录：用采集到的 localStorage/Cookie 换账号落池。 */
+    fun completeWebViewExtract(
+        providerId: String,
+        localStorage: Map<String, String>,
+        cookies: Map<String, String>,
+    ): LoginOutcome {
+        val support = registry.get(providerId) as? WebViewExtractSupport
+            ?: return LoginOutcome(LoginState.FAILED, error = "该供应商不支持内置浏览器登录")
+        return try {
+            val account = support.extractAccount(localStorage, cookies)
             adopt(providerId, account, "登录")
         } catch (e: Exception) {
             logWarn("登录失败（$providerId）：${e.message}")

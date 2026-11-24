@@ -40,6 +40,11 @@
             </intent-filter>
         </activity>
 
+        <activity
+            android:name=".WebViewLoginActivity"
+            android:exported="false"
+            android:windowSoftInputMode="adjustResize" />
+
         <service
             android:name=".service.GatewayService"
             android:exported="false"

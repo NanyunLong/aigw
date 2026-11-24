@@ -53,6 +53,35 @@ interface SmsLoginSupport {
     }
 }
 
+/**
+ * 内置 WebView 提取型登录（GLM / Kimi / DeepSeek）。
+ *
+ * 这类供应商没有 OAuth 回调：登录成功后凭据落在浏览器 localStorage 或 Cookie 里。
+ * App 用内置 WebView 打开 [loginUrl]，用户登录后由 WebView 把目标域名下的
+ * localStorage 键值和 Cookie 交回来，provider 据此提取并校验凭证。
+ */
+interface WebViewExtractSupport {
+    /** 登录页 URL（WebView 打开它）。 */
+    val loginUrl: String
+
+    /**
+     * WebView 需要采集的 localStorage 键名（在该供应商域名下）。
+     * 空列表表示只采集 Cookie。
+     */
+    val localStorageKeys: List<String> get() = emptyList()
+
+    /**
+     * 需要采集的 Cookie 名（在该供应商域名下）。
+     * 空列表表示只采集 localStorage。
+     */
+    val cookieNames: List<String> get() = emptyList()
+
+    /**
+     * 用 WebView 采集到的数据构造账号；校验失败抛 [IllegalStateException]（错误信息给用户看）。
+     */
+    fun extractAccount(localStorage: Map<String, String>, cookies: Map<String, String>): ProviderAccount
+}
+
 interface LoopbackOAuthSupport {
     fun buildAuthUrl(): String
 

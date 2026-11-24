@@ -23,6 +23,8 @@ class ProviderUiActions(
      * （区域型供应商会按它选登录端点）。无区域概念时传空串。
      */
     val onWebLogin: (providerId: String, region: String) -> Unit = { _, _ -> },
+    /** 内置 WebView 登录（GLM/Kimi/DeepSeek）：拉起 WebView 提取型登录页。 */
+    val onWebViewExtract: (providerId: String) -> Unit = { _ -> },
     /** 设备授权登录（WorkBuddy）：拉起 WebView 并开始轮询；region 由组件按滑块传入。 */
     val onDeviceLogin: (providerId: String, region: String) -> Unit = { _, _ -> },
     /** 读供应商私有设置项（同步，取引擎内存值）。 */

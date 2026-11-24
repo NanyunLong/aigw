@@ -242,5 +242,3 @@ fun UsageRankList(
         }
     }
 }
-
-private fun formatTokensLocalUnused() = Unit
