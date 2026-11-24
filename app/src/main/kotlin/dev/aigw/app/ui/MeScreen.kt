@@ -399,7 +399,8 @@ fun UsageScreen(state: AppUiState, viewModel: AppViewModel, onBack: () -> Unit) 
     val sum = remember(days) { rangeSum(days) }
     val providerName = remember(state.providers) {
         val m = state.providers.associate { it.id to it.displayName }
-        { id: String -> m[id] ?: id.removePrefix("custom:") }
+        val f: (String) -> String = { id -> m[id] ?: id.removePrefix("custom:") }
+        f
     }
 
     PageScaffold(
@@ -437,7 +438,9 @@ fun UsageScreen(state: AppUiState, viewModel: AppViewModel, onBack: () -> Unit) 
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             } else {
-                StackedTrendChart(days, selectedDay) { selectedDay = if (selectedDay == it) null else it }
+                StackedTrendChart(days = days, selectedMillis = selectedDay, onSelect = { day ->
+                    selectedDay = if (selectedDay == day) null else day
+                })
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(16.dp),
@@ -506,7 +509,8 @@ fun UsageScreen(state: AppUiState, viewModel: AppViewModel, onBack: () -> Unit) 
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             } else {
-                UsageRankList("", byModel.map { it.key to it.value }, { it })
+                val id: (String) -> String = { s -> s }
+                UsageRankList("", byModel.map { it.key to it.value }, id)
             }
         }
 

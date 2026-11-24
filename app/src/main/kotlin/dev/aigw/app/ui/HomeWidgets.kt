@@ -813,7 +813,6 @@ private fun HomeLegendDot(color: Color, text: String) {
     }
 }
 
-@Composable
 // ---------------------------------------------------------------------- 上游配额池
 
 /**

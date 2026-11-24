@@ -12,6 +12,21 @@ data class UsageGroups(
     val byModel: Map<String, UsageStats> = emptyMap(),
 )
 
+/** 合并两份聚合（逐字段相加），用于跨天/跨分组汇总。 */
+internal operator fun UsageStats.plus(other: UsageStats): UsageStats = UsageStats(
+    requests = requests + other.requests,
+    promptTokens = promptTokens + other.promptTokens,
+    completionTokens = completionTokens + other.completionTokens,
+    totalTokens = totalTokens + other.totalTokens,
+    cachedTokens = cachedTokens + other.cachedTokens,
+    success = success + other.success,
+    failed = failed + other.failed,
+    aborted = aborted + other.aborted,
+    retried = retried + other.retried,
+    costMicros = costMicros + other.costMicros,
+    unpriced = unpriced + other.unpriced,
+)
+
 private fun UsageGroups.plus(record: CallRecord): UsageGroups = UsageGroups(
     byProvider = byProvider.toMutableMap().apply {
         val k = record.providerId
@@ -297,6 +312,16 @@ class CallLogStore(
         return (days - 1 downTo 0).map { offset ->
             val day = startOfDay(today - offset * 86_400_000L)
             (daily[day] ?: UsageStats()).copy(dayMillis = day)
+        }
+    }
+
+    /** 最近 [days] 天的分组聚合，顺序与 [dailyStats] 一致（末尾为今天）。 */
+    @Synchronized
+    fun groupedStats(nowMillis: Long, days: Int = 30): List<UsageGroups> {
+        if (days <= 0) return emptyList()
+        val today = startOfDay(nowMillis)
+        return (days - 1 downTo 0).map { offset ->
+            groups[startOfDay(today - offset * 86_400_000L)] ?: UsageGroups()
         }
     }
 
