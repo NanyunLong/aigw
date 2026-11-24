@@ -105,3 +105,4 @@ EOF
           echo "提示：非定制面文件可直接 git checkout upstream/main -- <file>；"
           echo "定制面文件请人工 diff 后只取上游必要逻辑，保留我们的实现。"
           echo "处理完记得把 workflow 里的 UPSTREAM_LAST_SYNC 更新为 $(git rev-parse upstream/main)。"
+# trigger reindex 2026-11-24
