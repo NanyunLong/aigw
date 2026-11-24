@@ -61,11 +61,14 @@ import androidx.compose.ui.layout.boundsInRoot
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import dev.aigw.app.ui.theme.DeepInk
 import dev.aigw.app.ui.theme.LocalAppColors
+import dev.aigw.app.ui.formatCount
+import dev.aigw.app.ui.formatTokens
 import dev.aigw.core.usage.UsageStats
 import dev.aigw.core.util.startOfDay
 import java.text.SimpleDateFormat
@@ -763,6 +766,8 @@ internal fun HomeTrendWidget(state: AppUiState) {
         trend.size >= 2 && trend.any { it.promptTokens > 0 || it.completionTokens > 0 }
     }
     val gold = LocalAppColors.current.goldStart
+    val totalTokens = remember(trend) { trend.sumOf { it.promptTokens + it.completionTokens } }
+    val totalRequests = remember(trend) { trend.sumOf { it.requests } }
     SectionCard {
         SectionHeader("消耗趋势", action = if (trend.isEmpty()) null else "近 ${trend.size} 天")
         if (drawable) {
@@ -773,6 +778,13 @@ internal fun HomeTrendWidget(state: AppUiState) {
             ) {
                 HomeLegendDot(gold, "输入")
                 HomeLegendDot(DeepInk, "输出")
+                Text(
+                    text = "近 ${trend.size} 天 · ${formatTokens(totalTokens)} · ${formatCount(totalRequests)} 请求",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.weight(1f),
+                    textAlign = TextAlign.End,
+                )
             }
         } else {
             Text(
@@ -863,7 +875,7 @@ private fun DrawScope.drawHomeSeries(xs: FloatArray, ys: FloatArray, baseline: F
         lineTo(xs.last(), baseline)
         close()
     }
-    drawPath(fillPath, color = color.copy(alpha = 0.12f))
+    drawPath(fillPath, color = color.copy(alpha = 0.16f))
     val linePath = Path().apply {
         moveTo(xs[0], ys[0])
         for (i in 1 until xs.size) lineTo(xs[i], ys[i])
@@ -871,8 +883,12 @@ private fun DrawScope.drawHomeSeries(xs: FloatArray, ys: FloatArray, baseline: F
     drawPath(
         linePath,
         color = color,
-        style = Stroke(width = 1.6.dp.toPx(), cap = StrokeCap.Round, join = StrokeJoin.Round),
+        style = Stroke(width = 2.dp.toPx(), cap = StrokeCap.Round, join = StrokeJoin.Round),
     )
+    // 数据点圆点：实心 3dp
+    for (i in xs.indices) {
+        drawCircle(color, radius = 3.dp.toPx(), center = Offset(xs[i], ys[i]))
+    }
 }
 
 /** 坐标轴上限缩写：1.2k / 3.4M。 */
