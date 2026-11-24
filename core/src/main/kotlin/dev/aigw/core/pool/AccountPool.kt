@@ -46,6 +46,8 @@ data class AccountStatus(
      * 另一个账号身上，「优先」标就会带着跑。这里比的是「实际位置 vs 默认位置」。
      */
     val raised: Boolean = false,
+    /** 额度重置/过期时刻（毫秒，0 未知）。PACE 策略靠它判断「快作废的先花」。 */
+    val resetAtMillis: Long = 0L,
 ) {
     val usable: Boolean get() = !disabled && enabled
 }
@@ -500,6 +502,7 @@ class AccountPool(
         disabled = entry.disabled,
         enabled = entry.enabled,
         priority = entry.priority,
+        resetAtMillis = entry.resetAtMillis,
     )
 
     private fun keyOf(providerId: String, uid: String) = "$providerId/$uid"
