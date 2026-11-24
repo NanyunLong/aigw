@@ -1,9 +1,11 @@
-name: Sync Upstream (detect-only)
+name: Sync Upstream (report-only)
 
-# 本仓库是基于上游 xibai6668/Android-AI-gateway 的一次性重新入库（无关历史），
-# 无法用 git merge 直接合并上游。此工作流只负责“发现上游有新提交并报告”，
-# 不再尝试自动合并、不会因为 tag 同名或历史无关而红灯。
-# 真要移植某个上游改动，请人工挑取（cherry-pick / 手动对比）后另开提交。
+# 本仓库与上游 xibai6668/Android-AI-gateway 是“无关历史”（建仓时整树重新入库），
+# 禁止 git merge（必炸）。此工作流每天只做一件事：
+#   以上次同步点（UPSTREAM_LAST_SYNC）为基准，看上游 main 有没有“新的”提交，
+#   若有，列出改了哪些文件，并标出哪些落在我们的定制面上。
+# 绝不自动合并、绝不会因为无关历史或 tag 同名而红灯。
+# 详见仓库根部 UPSTREAM_BASELINE.md。
 on:
   workflow_dispatch:
   schedule:
@@ -11,14 +13,18 @@ on:
 
 permissions:
   contents: read
-  actions: read
 
 concurrency:
   group: sync-upstream
   cancel-in-progress: false
 
+env:
+  # 上次同步到上游哪个提交；建仓即同步到 838fe76。
+  # 以后从上游挑取了新东西并提交后，把这个值改成当时上游的 commit。
+  UPSTREAM_LAST_SYNC: '838fe76410ba132f80a9d6b678b1df0f5e921b65'
+
 jobs:
-  check:
+  report:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -32,12 +38,70 @@ jobs:
           # 关键：不加 --tags，避免与本地同名 tag（如 v2.38.4）冲突导致 fetch 失败
           git fetch upstream --prune --no-tags
 
-      - name: Report new upstream commits
+      - name: Report new upstream commits since last sync
         run: |
           set -e
-          # 无共同祖先，无法用 merge-base 判断，改用“上游历中是否有本地未包含的提交”做近似报告。
-          echo "=== 上游 main 最近 20 个提交 ==="
-          git log --oneline -20 upstream/main || true
+          BASE="$UPSTREAM_LAST_SYNC"
+          echo "================================================================"
+          echo " 上次同步点 : $BASE ($(git log -1 --format='%ci %s' $BASE 2>/dev/null || echo '未知'))"
+          echo " 上游最新   : $(git log -1 --format='%h %ci %s' upstream/main)"
+          echo "================================================================"
+
+          if ! git cat-file -e "$BASE" 2>/dev/null; then
+            echo "⚠️ 找不到基准提交 $BASE，请更新 workflow 里的 UPSTREAM_LAST_SYNC。"
+            exit 0
+          fi
+
+          COUNT=$(git rev-list --count "$BASE"..upstream/main)
+          if [ "$COUNT" = "0" ]; then
+            echo "✅ 上游自上次同步以来没有任何新提交，无需处理。"
+            exit 0
+          fi
+
+          echo "发现上游新提交 $COUNT 个："
+          git log --oneline "$BASE"..upstream/main
           echo ""
-          echo "若需移植，请在本地：git fetch upstream --no-tags，然后按提交逐个 cherry-pick。"
-          echo "本工作流不再自动合并（历史无关），因此不会失败。"
+
+          git diff --name-only "$BASE" upstream/main > /tmp/changed.txt || true
+
+          # 我们的定制面（与 UPSTREAM_BASELINE.md 第 3 节一致）
+          cat > /tmp/protect.txt <<'EOF'
+core/src/main/kotlin/dev/aigw/core/provider/custom/ProviderPresets.kt
+app/src/main/kotlin/dev/aigw/app/ui/CustomProviderScreen.kt
+core/src/main/kotlin/dev/aigw/core/gateway/GatewayEngine.kt
+core/src/main/kotlin/dev/aigw/core/provider/loomy/LoomyAuthClient.kt
+core/src/main/kotlin/dev/aigw/core/provider/loomy/LoomyConstants.kt
+core/src/main/kotlin/dev/aigw/core/provider/loomy/LoomyProvider.kt
+core/src/main/kotlin/dev/aigw/core/provider/loomy/LoomyWechatClient.kt
+app/src/main/kotlin/dev/aigw/app/ui/AppViewModel.kt
+app/src/main/kotlin/dev/aigw/app/ui/HomeScreen.kt
+app/src/main/kotlin/dev/aigw/app/ui/HomeWidgets.kt
+app/src/main/kotlin/dev/aigw/app/ui/MeScreen.kt
+app/src/main/kotlin/dev/aigw/app/ui/ProviderDetailScreen.kt
+app/src/main/kotlin/dev/aigw/app/ui/providers/ProviderUi.kt
+app/src/main/kotlin/dev/aigw/app/ui/providers/loomy/LoomyUi.kt
+core/src/main/kotlin/dev/aigw/core/update/UpdateSource.kt
+core/src/test/kotlin/dev/aigw/core/update/UpdateTest.kt
+app/src/main/res/values/strings.xml
+app/src/main/res/values/themes.xml
+app/build.gradle.kts
+.github/workflows/android-release.yml
+.github/workflows/build-release.yml
+.github/workflows/build-selfsigned.yml
+.github/workflows/sync-upstream.yml
+.gitignore
+README.md
+EOF
+
+          echo "### 上游本次改动的文件："
+          cat /tmp/changed.txt
+          echo ""
+          echo "### ✅ 可安全跟进（不在定制面）："
+          grep -v -F -f /tmp/protect.txt /tmp/changed.txt || true
+          echo ""
+          echo "### ⚠️ 命中定制面，必须人工逐块挑取，禁止整文件覆盖："
+          grep -F -f /tmp/protect.txt /tmp/changed.txt || true
+          echo ""
+          echo "提示：非定制面文件可直接 git checkout upstream/main -- <file>；"
+          echo "定制面文件请人工 diff 后只取上游必要逻辑，保留我们的实现。"
+          echo "处理完记得把 workflow 里的 UPSTREAM_LAST_SYNC 更新为 $(git rev-parse upstream/main)。"
