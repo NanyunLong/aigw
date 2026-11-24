@@ -822,9 +822,7 @@ class GatewayHttpServer(
                         break
                     }
 
-                    // 额度/积分耗尽（QUOTA，如 CodeBuddy/Raccoon/CustomProvider 的 402）：
-                    // 这是账号级问题，先冷却当前号、换同供应商内其他账号，别急着换供应商。
-                    // 与流内业务错误分支的 QUOTA 处理保持一致（那里本就是换号 continue）。
+                    // 额度耗尽(QUOTA)是账号级问题：冷却当前号+换同供应商内账号，不换供应商。
                     if (error.kind == ErrorKind.QUOTA) {
                         cb.recordFailure()
                         modelBreaker.recordFailure()
