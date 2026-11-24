@@ -560,6 +560,7 @@ class CallLogStore(
         private const val USAGE_PREFIX = "usage/"
         private const val TOTAL_KEY = "usage/total"
         private const val DAY_PREFIX = "usage/day/"
+        private const val GROUP_PREFIX = "usage/grp/"
 
         /** 每日聚合保留天数（含今天）。 */
         const val RETENTION_DAYS = 30
