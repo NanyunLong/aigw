@@ -1990,6 +1990,7 @@ class GatewayEngine(
                     priority = status?.priority ?: 0,
                     credits = status?.credits ?: 0L,
                     creditsKnown = status?.creditsKnown ?: false,
+                    resetAtMillis = status?.resetAtMillis ?: 0L,
                 )
             }
         val ordered = dev.aigw.core.failover.orderAccounts(candidates, accountStrategy())
