@@ -13,7 +13,7 @@ data class UsageGroups(
 )
 
 /** 合并两份聚合（逐字段相加），用于跨天/跨分组汇总。 */
-internal operator fun UsageStats.plus(other: UsageStats): UsageStats = UsageStats(
+operator fun UsageStats.plus(other: UsageStats): UsageStats = UsageStats(
     requests = requests + other.requests,
     promptTokens = promptTokens + other.promptTokens,
     completionTokens = completionTokens + other.completionTokens,
