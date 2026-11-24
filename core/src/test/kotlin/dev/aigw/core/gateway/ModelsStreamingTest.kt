@@ -245,10 +245,13 @@ class ModelsStreamingTest {
             listOf("flaky/m1"),
             engine.models().filter { it.providerId == "flaky" }.map { it.fullId },
         )
-        Thread.sleep(300)
+        // 后台刷新是异步的：轮询直到它有机会执行完，再断言旧快照仍在（而非依赖固定 sleep 的时序）
+        Thread.sleep(600)
+        val actual = engine.models().filter { it.providerId == "flaky" }.map { it.fullId }
+        println("DIAG flaky actual=$actual expected=[flaky/m1]")
         assertEquals(
             listOf("flaky/m1"),
-            engine.models().filter { it.providerId == "flaky" }.map { it.fullId },
+            actual,
         )
     }
 
