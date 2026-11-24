@@ -52,6 +52,7 @@ import dev.aigw.core.usage.StorageEntry
 import dev.aigw.core.usage.StorageReport
 import dev.aigw.core.usage.UsageStats
 import dev.aigw.core.usage.formatMicroUsd
+import dev.aigw.core.usage.plus
 import dev.aigw.core.provider.custom.ProviderPresets
 import dev.aigw.core.util.startOfDay
 import java.util.Locale

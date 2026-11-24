@@ -31,6 +31,7 @@ import dev.aigw.app.ui.theme.LocalAppColors
 import dev.aigw.app.ui.theme.DeepInk
 import dev.aigw.core.usage.UsageStats
 import dev.aigw.core.usage.formatMicroUsd
+import dev.aigw.core.usage.plus
 import dev.aigw.core.util.startOfDay
 import java.util.Calendar
 import java.util.Date
