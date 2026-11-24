@@ -245,14 +245,16 @@ class ModelsStreamingTest {
             listOf("flaky/m1"),
             engine.models().filter { it.providerId == "flaky" }.map { it.fullId },
         )
-        // 后台刷新是异步的：轮询直到它有机会执行完，再断言旧快照仍在（而非依赖固定 sleep 的时序）
-        Thread.sleep(600)
-        val actual = engine.models().filter { it.providerId == "flaky" }.map { it.fullId }
-        println("DIAG flaky actual=$actual expected=[flaky/m1]")
-        assertEquals(
-            listOf("flaky/m1"),
-            actual,
-        )
+        // 后台刷新是异步的：给足时间让它执行完，再断言旧快照仍在。
+        // 固定 sleep 在慢 CI 上会 flaky，用轮询重试兜住（最多 2s）。
+        var actual = emptyList<String>()
+        val deadline = System.currentTimeMillis() + 2000
+        while (System.currentTimeMillis() < deadline) {
+            actual = engine.models().filter { it.providerId == "flaky" }.map { it.fullId }
+            if (actual == listOf("flaky/m1")) break
+            Thread.sleep(100)
+        }
+        assertEquals(listOf("flaky/m1"), actual)
     }
 
     @Test
