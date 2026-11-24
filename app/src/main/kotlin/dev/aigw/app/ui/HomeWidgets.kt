@@ -51,12 +51,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.PathMeasure
 import androidx.compose.ui.graphics.StrokeCap
-import androidx.compose.ui.graphics.StrokeJoin
-import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
-import androidx.compose.ui.graphics.drawscope.drawIntoCanvas
-import androidx.compose.ui.graphics.nativeCanvas
-import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.layout.boundsInRoot
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.text.font.FontFamily
@@ -71,8 +66,6 @@ import dev.aigw.app.ui.formatCount
 import dev.aigw.app.ui.formatTokens
 import dev.aigw.core.usage.UsageStats
 import dev.aigw.core.util.startOfDay
-import java.text.SimpleDateFormat
-import java.util.Date
 import java.util.Locale
 
 /**
@@ -768,18 +761,30 @@ internal fun HomeTrendWidget(state: AppUiState) {
     val gold = LocalAppColors.current.goldStart
     val totalTokens = remember(trend) { trend.sumOf { it.promptTokens + it.completionTokens } }
     val totalRequests = remember(trend) { trend.sumOf { it.requests } }
+    var selectedDay by remember { mutableStateOf<Long?>(null) }
     SectionCard {
         SectionHeader("消耗趋势", action = if (trend.isEmpty()) null else "近 ${trend.size} 天")
         if (drawable) {
-            HomeTrendChart(trend, startOfDay(System.currentTimeMillis()))
+            StackedTrendChart(
+                days = trend,
+                selectedMillis = selectedDay,
+                onSelect = { selectedDay = if (selectedDay == it) null else it },
+                barHeightDp = 90,
+            )
             Row(
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(16.dp),
             ) {
                 HomeLegendDot(gold, "输入")
                 HomeLegendDot(DeepInk, "输出")
+                val dayNote = selectedDay?.let { day -> trend.firstOrNull { it.dayMillis == day } }
+                val note = if (dayNote != null && dayNote.requests > 0) {
+                    "${dayLabel(dayNote.dayMillis)} · ${formatTokens(dayNote.totalTokens)} · ${formatCount(dayNote.requests)} 次"
+                } else {
+                    "近 ${trend.size} 天 · ${formatTokens(totalTokens)} · ${formatCount(totalRequests)} 请求"
+                }
                 Text(
-                    text = "近 ${trend.size} 天 · ${formatTokens(totalTokens)} · ${formatCount(totalRequests)} 请求",
+                    text = note,
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.weight(1f),
@@ -809,99 +814,6 @@ private fun HomeLegendDot(color: Color, text: String) {
 }
 
 @Composable
-private fun HomeTrendChart(daily: List<UsageStats>, todayStart: Long) {
-    val gold = LocalAppColors.current.goldStart
-    val gridColor = MaterialTheme.colorScheme.surfaceContainerHighest
-    val labelColor = MaterialTheme.colorScheme.onSurfaceVariant
-    val n = daily.size
-    val maxValue = remember(daily) {
-        daily.maxOf { maxOf(it.promptTokens, it.completionTokens) }.coerceAtLeast(1L)
-    }
-    val labels = remember(daily, todayStart) {
-        List(n) { index -> homeDayLabel(todayStart - (n - 1 - index) * 86_400_000L) }
-    }
-
-    // 复用同一支画笔：绘制阶段只改对齐方式，不再每次重绘都新建
-    val axisPaint = remember { android.graphics.Paint() }
-    val inFractions = remember(daily, maxValue) {
-        FloatArray(n) { daily[it].promptTokens.toFloat() / maxValue }
-    }
-    val outFractions = remember(daily, maxValue) {
-        FloatArray(n) { daily[it].completionTokens.toFloat() / maxValue }
-    }
-    val xs = remember(n) { FloatArray(n) }
-    val inY = remember(n) { FloatArray(n) }
-    val outY = remember(n) { FloatArray(n) }
-    Canvas(Modifier.fillMaxWidth().height(150.dp)) {
-        val gutterLeft = 40.dp.toPx()
-        val gutterBottom = 22.dp.toPx()
-        val padTop = 6.dp.toPx()
-        val padRight = 6.dp.toPx()
-        val chartWidth = (size.width - gutterLeft - padRight).coerceAtLeast(1f)
-        val chartHeight = (size.height - gutterBottom - padTop).coerceAtLeast(1f)
-        val originY = padTop + chartHeight
-        val stepX = chartWidth / (n - 1)
-        for (i in 0 until n) {
-            xs[i] = gutterLeft + i * stepX
-            inY[i] = originY - inFractions[i] * chartHeight
-            outY[i] = originY - outFractions[i] * chartHeight
-        }
-
-        drawLine(gridColor, Offset(gutterLeft, originY), Offset(gutterLeft + chartWidth, originY), strokeWidth = 1f)
-        drawHomeSeries(xs, inY, originY, gold)
-        drawHomeSeries(xs, outY, originY, DeepInk)
-
-        drawIntoCanvas { canvas ->
-            axisPaint.isAntiAlias = true
-            axisPaint.color = labelColor.toArgb()
-            axisPaint.textSize = 9.sp.toPx()
-            axisPaint.textAlign = android.graphics.Paint.Align.RIGHT
-            canvas.nativeCanvas.drawText(formatHomeAxis(maxValue), gutterLeft - 6.dp.toPx(), originY, axisPaint)
-            axisPaint.textAlign = android.graphics.Paint.Align.CENTER
-            val labelY = originY + 14.dp.toPx()
-            for (index in listOf(0, (n - 1) / 2, n - 1).distinct()) {
-                canvas.nativeCanvas.drawText(labels[index], xs[index], labelY, axisPaint)
-            }
-        }
-    }
-}
-
-/** 一条序列：先画半透明填充，再画主线。 */
-private fun DrawScope.drawHomeSeries(xs: FloatArray, ys: FloatArray, baseline: Float, color: Color) {
-    if (xs.size < 2) return
-    val fillPath = Path().apply {
-        moveTo(xs[0], baseline)
-        for (i in xs.indices) lineTo(xs[i], ys[i])
-        lineTo(xs.last(), baseline)
-        close()
-    }
-    drawPath(fillPath, color = color.copy(alpha = 0.16f))
-    val linePath = Path().apply {
-        moveTo(xs[0], ys[0])
-        for (i in 1 until xs.size) lineTo(xs[i], ys[i])
-    }
-    drawPath(
-        linePath,
-        color = color,
-        style = Stroke(width = 2.dp.toPx(), cap = StrokeCap.Round, join = StrokeJoin.Round),
-    )
-    // 数据点圆点：实心 3dp
-    for (i in xs.indices) {
-        drawCircle(color, radius = 3.dp.toPx(), center = Offset(xs[i], ys[i]))
-    }
-}
-
-/** 坐标轴上限缩写：1.2k / 3.4M。 */
-private fun formatHomeAxis(value: Long): String = when {
-    value >= 1_000_000L -> String.format(Locale.US, "%.1fM", value / 1_000_000.0)
-    value >= 1_000L -> String.format(Locale.US, "%.1fk", value / 1_000.0)
-    else -> value.toString()
-}
-
-private val HOME_DAY_LABEL_FORMAT = SimpleDateFormat("M/d", Locale.US)
-
-private fun homeDayLabel(millis: Long): String = HOME_DAY_LABEL_FORMAT.format(Date(millis))
-
 // ---------------------------------------------------------------------- 上游配额池
 
 /**

@@ -6,6 +6,57 @@ import dev.aigw.core.store.KeyValueStore
 import dev.aigw.core.util.startOfDay
 import java.io.File
 
+/** 按天 × 服务商 / 模型的分组用量（键为 providerId 或 model 名）。 */
+data class UsageGroups(
+    val byProvider: Map<String, UsageStats> = emptyMap(),
+    val byModel: Map<String, UsageStats> = emptyMap(),
+)
+
+private fun UsageGroups.plus(record: CallRecord): UsageGroups = UsageGroups(
+    byProvider = byProvider.toMutableMap().apply {
+        val k = record.providerId
+        put(k, (get(k) ?: UsageStats()) + record)
+    },
+    byModel = byModel.toMutableMap().apply {
+        val k = record.model
+        put(k, (get(k) ?: UsageStats()) + record)
+    },
+)
+
+private fun UsageGroups.minus(record: CallRecord): UsageGroups = UsageGroups(
+    byProvider = byProvider.toMutableMap().apply {
+        val k = record.providerId
+        val rest = (get(k) ?: UsageStats()) - record
+        if (rest.isZero()) remove(k) else put(k, rest)
+    },
+    byModel = byModel.toMutableMap().apply {
+        val k = record.model
+        val rest = (get(k) ?: UsageStats()) - record
+        if (rest.isZero()) remove(k) else put(k, rest)
+    },
+)
+
+internal fun UsageGroups.toJson(): JsonObject = JsonObject().apply {
+    add("providers", JsonObject().apply {
+        byProvider.forEach { (k, v) -> add(k, v.toJson()) }
+    })
+    add("models", JsonObject().apply {
+        byModel.forEach { (k, v) -> add(k, v.toJson()) }
+    })
+}
+
+internal fun usageGroupsFromJson(root: JsonObject): UsageGroups {
+    fun readMap(name: String): Map<String, UsageStats> {
+        val node = root.getAsJsonObject(name) ?: return emptyMap()
+        val out = LinkedHashMap<String, UsageStats>()
+        for ((k, v) in node.entrySet()) {
+            if (v.isJsonObject) out[k] = usageStatsFromJson(v.asJsonObject.toString())
+        }
+        return out
+    }
+    return UsageGroups(byProvider = readMap("providers"), byModel = readMap("models"))
+}
+
 /** 调用记录详情里的文本字段。 */
 enum class CallTextField(val fileName: String) {
     REQUEST("request"),
@@ -90,6 +141,8 @@ data class UsageStats(
     val costMicros: Long = 0,
     /** 有记录但价格未知的调用数：它的费用**没有**计入 [costMicros]，界面要一并显示。 */
     val unpriced: Long = 0,
+    /** 该聚合对应的天起点（仅 dailyStats 填充；today/total/groups 为 0）。 */
+    val dayMillis: Long = 0,
 ) {
     /** 命中率（0~100 的百分比）；没有输入 token 时返回 null（无意义，不编造 0%）。 */
     val cacheHitPercent: Double?
@@ -122,6 +175,9 @@ class CallLogStore(
     /** 每日聚合，键为该日 00:00 的时间戳；仅保留最近 [RETENTION_DAYS] 天。 */
     private val daily = mutableMapOf<Long, UsageStats>()
 
+    /** 每日 × 服务商/模型 的分组聚合，与 daily 同生命周期。 */
+    private val groups = mutableMapOf<Long, UsageGroups>()
+
     init {
         if (preloadOnConstruction) load()
     }
@@ -149,6 +205,9 @@ class CallLogStore(
         val updated = (daily[day] ?: UsageStats()) + record
         daily[day] = updated
         store.write(dayKeyOf(day), updated.toJson().toString())
+        val g = (groups[day] ?: UsageGroups()).plus(record)
+        groups[day] = g
+        store.write(groupKeyOf(day), g.toJson().toString())
         pruneDaily()
     }
 
@@ -184,6 +243,12 @@ class CallLogStore(
             } else {
                 daily[day] = remaining
                 store.write(dayKeyOf(day), remaining.toJson().toString())
+            }
+                      groups.remove(day)
+                store.delete(groupKeyOf(day))
+            } else {
+                groups[day] = g
+                store.write(groupKeyOf(day), g.toJson().toString())
             }
         }
     }
@@ -228,7 +293,8 @@ class CallLogStore(
         if (days <= 0) return emptyList()
         val today = startOfDay(nowMillis)
         return (days - 1 downTo 0).map { offset ->
-            daily[startOfDay(today - offset * 86_400_000L)] ?: UsageStats()
+            val day = startOfDay(today - offset * 86_400_000L)
+            (daily[day] ?: UsageStats()).copy(dayMillis = day)
         }
     }
 
@@ -384,6 +450,21 @@ class CallLogStore(
                 daily[day] = (daily[day] ?: UsageStats()) + record
             }
         }
+        for (key in store.keys(GROUP_PREFIX)) {
+            val day = key.removePrefix(GROUP_PREFIX).toLongOrNull() ?: continue
+            groups[day] = store.read(key)?.let { raw ->
+                runCatching { usageGroupsFromJson(JsonParser.parseString(raw).asJsonObject) }.getOrNull()
+            } ?: UsageGroups()
+        }
+        // 旧版本升级：按已载入的记录补建缺失的分组键（更早的已随记录淘汰，不可考）
+        val byDay = records.groupBy { startOfDay(it.startedAtMillis) }
+        for ((day, recs) in byDay) {
+            if (groups.containsKey(day)) continue
+            var g = UsageGroups()
+            for (r in recs) g = g.plus(r)
+            groups[day] = g
+            store.write(groupKeyOf(day), g.toJson().toString())
+        }
     }
 
     private fun aggregate(records: List<CallRecord>): UsageStats {
@@ -395,6 +476,8 @@ class CallLogStore(
     private fun keyOf(id: String) = "$PREFIX$id"
 
     private fun dayKeyOf(day: Long) = "$DAY_PREFIX$day"
+
+    private fun groupKeyOf(day: Long) = "$GROUP_PREFIX$day"
 
     /**
      * 把超出摘要长度的完整原文溢写到缓存目录（每字段一个文件，单文件上限 [MAX_SPILL_CHARS]）。
@@ -410,7 +493,7 @@ class CallLogStore(
     private fun spillField(dir: File, id: String, field: CallTextField, content: String) {
         if (content.length <= MAX_SUMMARY_CHARS) {
             // 没有溢出：清掉可能残留的旧文件（同 id 不会重发，防御性清理）
-            File(dir, spillFileName(id, field)).delete()
+  .requestBodyle(dir, spillFileName(id, field)).delete()
             return
         }
         runCatching {
@@ -475,6 +558,7 @@ class CallLogStore(
         private const val USAGE_PREFIX = "usage/"
         private const val TOTAL_KEY = "usage/total"
         private const val DAY_PREFIX = "usage/day/"
+        private const val GROUP_PREFIX = "usage/grp/"
 
         /** 每日聚合保留天数（含今天）。 */
         const val RETENTION_DAYS = 30
@@ -590,6 +674,19 @@ private fun usageStatsFromJson(raw: String): UsageStats {
         aborted = obj.get("aborted")?.asLong ?: 0L,
         retried = obj.get("retried")?.asLong ?: 0L,
         costMicros = obj.get("costMicros")?.asLong ?: 0L,
+        unpriced = obj.get("unpriced")?.asLong ?: 0L,
+    )
+}
+s = obj.get("cachedTokens")?.asLong ?: 0L,
+        success = obj.get("success")?.asLong ?: 0L,
+        failed = obj.get("failed")?.asLong ?: 0L,
+        aborted = obj.get("aborted")?.asLong ?: 0L,
+        retried = obj.get("retried")?.asLong ?: 0L,
+        costMicros = obj.get("costMicros")?.asLong ?: 0L,
+        unpriced = obj.get("unpriced")?.asLong ?: 0L,
+    )
+}
+sLong ?: 0L,
         unpriced = obj.get("unpriced")?.asLong ?: 0L,
     )
 }

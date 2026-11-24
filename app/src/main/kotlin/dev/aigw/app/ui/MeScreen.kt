@@ -40,14 +40,8 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.StrokeCap
-import androidx.compose.ui.graphics.StrokeJoin
-import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
-import androidx.compose.ui.graphics.drawscope.drawIntoCanvas
-import androidx.compose.ui.graphics.nativeCanvas
-import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.unit.sp
 import dev.aigw.app.data.CrashReporter
 import dev.aigw.app.ui.theme.DeepInk
@@ -60,12 +54,7 @@ import dev.aigw.core.usage.UsageStats
 import dev.aigw.core.usage.formatMicroUsd
 import dev.aigw.core.provider.custom.ProviderPresets
 import dev.aigw.core.util.startOfDay
-import java.text.SimpleDateFormat
-import java.util.Date
 import java.util.Locale
-
-/** 趋势图展示天数。 */
-private const val TREND_DAYS = 14
 
 @Composable
 fun MeScreen(state: AppUiState, viewModel: AppViewModel, open: (SubPage) -> Unit) {
@@ -404,9 +393,18 @@ fun UsageScreen(state: AppUiState, viewModel: AppViewModel, onBack: () -> Unit) 
     // 存储占用不挂在全局 refresh 里（要扫全量存储键并解密，代价高），
     // 本页「存储」卡片读的是 state 里的同一份，不主动刷新会恒为 0，故进入本页时算一次。
     LaunchedEffect(Unit) { viewModel.refreshStorage() }
+    var range by remember { mutableStateOf(UsageRange.WEEK) }
+    var selectedDay by remember { mutableStateOf<Long?>(null) }
+    val days = remember(state.daily, range) { rangeDays(range, state.daily) }
+    val sum = remember(days) { rangeSum(days) }
+    val providerName = remember(state.providers) {
+        val m = state.providers.associate { it.id to it.displayName }
+        { id: String -> m[id] ?: id.removePrefix("custom:") }
+    }
+
     PageScaffold(
         title = "用量统计",
-        subtitle = "今日、趋势与累计",
+        subtitle = "趋势、分组与累计",
         leading = {
             Icon(
                 Icons.AutoMirrored.Filled.ArrowBack,
@@ -416,29 +414,104 @@ fun UsageScreen(state: AppUiState, viewModel: AppViewModel, onBack: () -> Unit) 
             )
         },
     ) {
+        RangeTabs(range) { r ->
+            range = r
+            selectedDay = null
+        }
+
+        // 范围总览
         SectionCard(enterIndex = 3) {
-            SectionLabel("总览")
-            OverviewGrid(state.total)
+            SectionLabel(if (range == UsageRange.ALL) "总览" else range.label)
+            OverviewGrid(sum)
+            CostLine(sum)
         }
 
+        // 趋势（可点选某天）
         SectionCard(enterIndex = 4) {
-            SectionLabel("近期趋势")
-            TrendSection(state)
-        }
-
-        SectionCard(enterIndex = 5) {
-            SectionLabel("今日")
-            CacheHitGauge(state.today, highlight = true)
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
-                StatCell(formatCount(state.today.requests), "请求")
-                StatCell(formatCount(state.today.success), "成功")
-                StatCell(formatCount(state.today.failed), "失败")
-                StatCell(formatCount(state.today.aborted), "中断")
+            SectionLabel("趋势")
+            if (range == UsageRange.TODAY) {
+                CacheHitGauge(sum, highlight = true)
+                Text(
+                    text = "今日用量按天粒度展示，点开「7天/30天」可看逐日趋势",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            } else {
+                StackedTrendChart(days, selectedDay) { selectedDay = if (selectedDay == it) null else it }
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(16.dp),
+                ) {
+                    LegendDot(LocalAppColors.current.goldStart, "输入")
+                    LegendDot(DeepInk, "输出")
+                    val total = days.sumOf { it.totalTokens }
+                    Text(
+                        text = "共 ${formatTokens(total)} tokens",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.weight(1f),
+                        textAlign = TextAlign.End,
+                    )
+                }
+                selectedDay?.let { day ->
+                    val s = days.firstOrNull { it.dayMillis == day }
+                    if (s != null) {
+                        HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+                        Text(
+                            text = fullDayLabel(day),
+                            style = MaterialTheme.typography.titleSmall,
+                            fontWeight = FontWeight.SemiBold,
+                            color = LocalAppColors.current.goldStart,
+                        )
+                        SelectedDayStats(s)
+                    }
+                }
             }
-            CostLine(state.today)
         }
 
+        // 服务商 / 模型排行
+        val groupsInRange = remember(state.groups, days) {
+            if (range == UsageRange.ALL) state.groups else state.groups.takeLast(days.size)
+        }
+        val byProvider = remember(groupsInRange) {
+            groupsInRange.flatMap { it.byProvider.entries }
+                .groupBy({ it.key }, { it.value })
+                .mapValues { (_, list) -> list.fold(UsageStats()) { a, b -> a + b } }
+                .entries.sortedByDescending { it.value.totalTokens }
+        }
+        val byModel = remember(groupsInRange) {
+            groupsInRange.flatMap { it.byModel.entries }
+                .groupBy({ it.key }, { it.value })
+                .mapValues { (_, list) -> list.fold(UsageStats()) { a, b -> a + b } }
+                .entries.sortedByDescending { it.value.totalTokens }
+        }
+        SectionCard(enterIndex = 5) {
+            SectionLabel("服务商")
+            if (byProvider.isEmpty()) {
+                Text(
+                    text = "该范围暂无调用",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            } else {
+                UsageRankList("", byProvider.map { it.key to it.value }, providerName)
+            }
+        }
         SectionCard(enterIndex = 6) {
+            SectionLabel("模型")
+            if (byModel.isEmpty()) {
+                Text(
+                    text = "该范围暂无调用",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            } else {
+                UsageRankList("", byModel.map { it.key to it.value }, { it })
+            }
+        }
+
+        // 累计（含缓存环、请求结果分布）
+        SectionCard(enterIndex = 7) {
             SectionLabel("累计")
             CacheHitGauge(state.total)
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
@@ -447,12 +520,6 @@ fun UsageScreen(state: AppUiState, viewModel: AppViewModel, onBack: () -> Unit) 
                 StatCell(formatCount(state.total.failed), "失败")
                 StatCell(formatCount(state.total.aborted), "中断")
             }
-            CostLine(state.total)
-        }
-
-        SectionCard(enterIndex = 7) {
-            SectionLabel("按天明细")
-            DailyBreakdown(state)
         }
 
         SectionCard(enterIndex = 8) {
@@ -467,6 +534,31 @@ fun UsageScreen(state: AppUiState, viewModel: AppViewModel, onBack: () -> Unit) 
             } else {
                 StorageDetail(state, report, viewModel)
             }
+        }
+    }
+}
+
+/** 点选某天后的详细统计（复用 AIGW 现有的字段）。 */
+@Composable
+private fun SelectedDayStats(stats: UsageStats) {
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
+            StatCell(formatTokens(stats.promptTokens), "输入")
+            StatCell(formatTokens(stats.completionTokens), "输出")
+            StatCell(formatTokens(stats.cachedTokens), "缓存命中")
+        }
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
+            StatCell(formatCount(stats.requests), "请求")
+            StatCell(formatCount(stats.success), "成功")
+            StatCell(formatCount(stats.failed), "失败")
+        }
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
+            StatCell(
+                value = if (stats.cacheHitPercent != null) String.format(Locale.US, "%.0f%%", stats.cacheHitPercent) else "—",
+                label = "命中率",
+            )
+            StatCell(formatCount(stats.retried), "换号救回")
+            StatCell(formatMicroUsd(stats.costMicros), "费用（美元）")
         }
     }
 }
@@ -494,101 +586,6 @@ private fun OverviewGrid(stats: UsageStats) {
             StatCell(formatTokens(stats.cachedTokens), "缓存命中", Modifier.weight(1f))
             StatCell(formatMicroUsd(stats.costMicros), "费用（美元）", Modifier.weight(1f))
         }
-    }
-}
-
-/**
- * 按天明细：7/14 日切换 + 每日一行（输入/输出/请求/命中率）。
- * 复用 TrendSection 的天数切换状态，无数据的日期显示 "—"。
- */
-@Composable
-private fun DailyBreakdown(state: AppUiState) {
-    var days by remember { mutableStateOf(TREND_DAYS) }
-    val daily = remember(state.daily, days) { state.daily.takeLast(days) }
-    val todayStart = startOfDay(System.currentTimeMillis())
-
-    // 天数切换
-    Row(
-        modifier = Modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.End,
-    ) {
-        for (d in listOf(7, 14)) {
-            Text(
-                text = "${d}日",
-                style = MaterialTheme.typography.labelSmall,
-                color = if (days == d) LocalAppColors.current.goldStart else MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier
-                    .clip(CircleShape)
-                    .clickable { days = d }
-                    .padding(horizontal = 10.dp, vertical = 4.dp),
-            )
-        }
-    }
-
-    Column(Modifier.fillMaxWidth().padding(top = 8.dp)) {
-        daily.forEachIndexed { index, stats ->
-            if (index > 0) {
-                HorizontalDivider(
-                    color = MaterialTheme.colorScheme.outlineVariant,
-                    modifier = Modifier.padding(vertical = 6.dp),
-                )
-            }
-            DailyRow(stats, todayStart - (daily.size - 1 - index) * 86_400_000L)
-        }
-    }
-}
-
-/** 一行：日期 + 输入/输出/请求/命中率 四格。 */
-@Composable
-private fun DailyRow(stats: UsageStats, dayMillis: Long) {
-    val hasData = stats.requests > 0
-    Row(
-        modifier = Modifier.fillMaxWidth(),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Text(
-            text = dayLabel(dayMillis),
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            modifier = Modifier.width(44.dp),
-        )
-        if (hasData) {
-            Row(Modifier.weight(1f), horizontalArrangement = Arrangement.SpaceEvenly) {
-                DailyCell(formatTokens(stats.promptTokens), "输入")
-                DailyCell(formatTokens(stats.completionTokens), "输出")
-                DailyCell(formatCount(stats.requests), "请求")
-                DailyCell(
-                    value = if (stats.cacheHitPercent != null) String.format(Locale.US, "%.0f%%", stats.cacheHitPercent) else "—",
-                    label = "命中率",
-                )
-            }
-        } else {
-            Text(
-                text = "—",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.weight(1f),
-                textAlign = TextAlign.Center,
-            )
-        }
-    }
-}
-
-/** 小格：数值 + 标签，紧凑排列。 */
-@Composable
-private fun DailyCell(value: String, label: String) {
-    Column(horizontalAlignment = Alignment.CenterHorizontally) {
-        Text(
-            text = value,
-            style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
-            fontWeight = FontWeight.Light,
-            color = MaterialTheme.colorScheme.onSurface,
-        )
-        Text(
-            text = label,
-            style = MaterialTheme.typography.labelSmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
     }
 }
 
@@ -718,45 +715,6 @@ private fun StorageEntryRow(entry: StorageEntry) {
     }
 }
 
-/**
- * 近 14 天输入/输出 token 折线。放在用量统计页而不是首页：它是回顾型数据，
- * 与「今日/累计」同属一处。
- */
-@Composable
-private fun TrendSection(state: AppUiState) {
-    val trend = remember(state.daily) { state.daily.takeLast(TREND_DAYS) }
-    val drawable = remember(trend) {
-        trend.size >= 2 && trend.any { it.promptTokens > 0 || it.completionTokens > 0 }
-    }
-    if (!drawable) {
-        Text(
-            text = "暂无足够历史，累积几天后显示趋势",
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            modifier = Modifier.padding(vertical = 12.dp),
-        )
-        return
-    }
-
-    val gold = LocalAppColors.current.goldStart
-    val totalTokens = remember(trend) { trend.sumOf { it.promptTokens + it.completionTokens } }
-    TrendChart(trend, startOfDay(System.currentTimeMillis()))
-    Row(
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(16.dp),
-    ) {
-        LegendDot(gold, "输入")
-        LegendDot(DeepInk, "输出")
-        Text(
-            text = "近 ${trend.size} 天 · ${formatTokens(totalTokens)}",
-            style = MaterialTheme.typography.labelSmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            modifier = Modifier.weight(1f),
-            textAlign = TextAlign.End,
-        )
-    }
-}
-
 @Composable
 private fun LegendDot(color: Color, text: String) {
     Row(
@@ -767,100 +725,6 @@ private fun LegendDot(color: Color, text: String) {
         Text(text, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
     }
 }
-
-@Composable
-private fun TrendChart(daily: List<UsageStats>, todayStart: Long) {
-    val gold = LocalAppColors.current.goldStart
-    val gridColor = MaterialTheme.colorScheme.surfaceContainerHighest
-    val labelColor = MaterialTheme.colorScheme.onSurfaceVariant
-    val n = daily.size
-    val maxValue = remember(daily) {
-        daily.maxOf { maxOf(it.promptTokens, it.completionTokens) }.coerceAtLeast(1L)
-    }
-    val labels = remember(daily, todayStart) {
-        List(n) { index -> dayLabel(todayStart - (n - 1 - index) * 86_400_000L) }
-    }
-
-    // 复用同一支画笔：绘制阶段只改对齐方式，不再每次重绘都新建
-    val axisPaint = remember { android.graphics.Paint() }
-    val inFractions = remember(daily, maxValue) {
-        FloatArray(n) { daily[it].promptTokens.toFloat() / maxValue }
-    }
-    val outFractions = remember(daily, maxValue) {
-        FloatArray(n) { daily[it].completionTokens.toFloat() / maxValue }
-    }
-    val xs = remember(n) { FloatArray(n) }
-    val inY = remember(n) { FloatArray(n) }
-    val outY = remember(n) { FloatArray(n) }
-    Canvas(Modifier.fillMaxWidth().height(150.dp)) {
-        val gutterLeft = 40.dp.toPx()
-        val gutterBottom = 22.dp.toPx()
-        val padTop = 6.dp.toPx()
-        val padRight = 6.dp.toPx()
-        val chartWidth = (size.width - gutterLeft - padRight).coerceAtLeast(1f)
-        val chartHeight = (size.height - gutterBottom - padTop).coerceAtLeast(1f)
-        val originY = padTop + chartHeight
-        val stepX = chartWidth / (n - 1)
-        for (i in 0 until n) {
-            xs[i] = gutterLeft + i * stepX
-            inY[i] = originY - inFractions[i] * chartHeight
-            outY[i] = originY - outFractions[i] * chartHeight
-        }
-
-        drawLine(gridColor, Offset(gutterLeft, originY), Offset(gutterLeft + chartWidth, originY), strokeWidth = 1f)
-        drawSeries(xs, inY, originY, gold)
-        drawSeries(xs, outY, originY, DeepInk)
-
-        drawIntoCanvas { canvas ->
-            axisPaint.isAntiAlias = true
-            axisPaint.color = labelColor.toArgb()
-            axisPaint.textSize = 9.sp.toPx()
-            axisPaint.textAlign = android.graphics.Paint.Align.RIGHT
-            canvas.nativeCanvas.drawText(formatAxis(maxValue), gutterLeft - 6.dp.toPx(), originY, axisPaint)
-            axisPaint.textAlign = android.graphics.Paint.Align.CENTER
-            val labelY = originY + 14.dp.toPx()
-            for (index in listOf(0, (n - 1) / 2, n - 1).distinct()) {
-                canvas.nativeCanvas.drawText(labels[index], xs[index], labelY, axisPaint)
-            }
-        }
-    }
-}
-
-/** 一条序列：先画半透明填充，再画主线。 */
-private fun DrawScope.drawSeries(xs: FloatArray, ys: FloatArray, baseline: Float, color: Color) {
-    if (xs.size < 2) return
-    val fillPath = Path().apply {
-        moveTo(xs[0], baseline)
-        for (i in xs.indices) lineTo(xs[i], ys[i])
-        lineTo(xs.last(), baseline)
-        close()
-    }
-    drawPath(fillPath, color = color.copy(alpha = 0.16f))
-    val linePath = Path().apply {
-        moveTo(xs[0], ys[0])
-        for (i in 1 until xs.size) lineTo(xs[i], ys[i])
-    }
-    drawPath(
-        linePath,
-        color = color,
-        style = Stroke(width = 2.dp.toPx(), cap = StrokeCap.Round, join = StrokeJoin.Round),
-    )
-    // 数据点圆点：实心 3dp
-    for (i in xs.indices) {
-        drawCircle(color, radius = 3.dp.toPx(), center = Offset(xs[i], ys[i]))
-    }
-}
-
-/** 坐标轴上限缩写：1.2k / 3.4M。 */
-private fun formatAxis(value: Long): String = when {
-    value >= 1_000_000L -> String.format(Locale.US, "%.1fM", value / 1_000_000.0)
-    value >= 1_000L -> String.format(Locale.US, "%.1fk", value / 1_000.0)
-    else -> value.toString()
-}
-
-private val DAY_LABEL_FORMAT = SimpleDateFormat("M/d", Locale.US)
-
-private fun dayLabel(millis: Long): String = DAY_LABEL_FORMAT.format(Date(millis))
 
 /**
  * 费用与重试两行。

@@ -279,6 +279,8 @@ data class AppUiState(
     val today: UsageStats = UsageStats(),
     /** 最近 30 天的每日聚合（下标 0 最早、末尾今天）。 */
     val daily: List<UsageStats> = emptyList(),
+    /** 与 [daily] 对齐的每日 × 服务商/模型 分组聚合。 */
+    val groups: List<dev.aigw.core.usage.UsageGroups> = emptyList(),
     /** 全部记录汇总（今日 + 历史）。 */
     val total: UsageStats = UsageStats(),
     val providers: List<ProviderInfo> = emptyList(),
@@ -386,6 +388,7 @@ private class Snapshot(
     val pool: PoolSummary,
     val today: UsageStats,
     val daily: List<UsageStats>,
+    val groups: List<dev.aigw.core.usage.UsageGroups>,
     val total: UsageStats,
     val providers: List<ProviderInfo>,
     val accounts: List<AccountStatus>,
@@ -542,6 +545,7 @@ class AppViewModel(
                     pool = engine.pool.summary(),
                     today = engine.callLogStore.todayStats(System.currentTimeMillis()),
                     daily = engine.callLogStore.dailyStats(System.currentTimeMillis()),
+                    groups = engine.callLogStore.groupedStats(System.currentTimeMillis()),
                     total = engine.callLogStore.totalStats(),
                     providers = engine.providers(),
                     accounts = engine.accounts(),
@@ -576,6 +580,7 @@ class AppViewModel(
                 pool = snapshot.pool,
                 today = snapshot.today,
                 daily = snapshot.daily,
+                groups = snapshot.groups,
                 total = snapshot.total,
                 providers = snapshot.providers,
                 accounts = snapshot.accounts,
