@@ -19,6 +19,7 @@ import dev.aigw.app.data.KeepAlive
 import dev.aigw.app.data.KeepAliveStatus
 import dev.aigw.app.gatewayEngine
 import dev.aigw.app.updateApkDir
+import dev.aigw.app.WebViewLoginActivity
 import dev.aigw.app.ui.theme.ThemeMode
 import dev.aigw.app.ui.theme.defaultAppColors
 import dev.aigw.app.ui.theme.formatHex
