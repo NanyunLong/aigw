@@ -1248,8 +1248,6 @@ class AppViewModel(
         providerSettings(providerId).option(key, fallback)
 
     fun updateProviderOption(providerId: String, key: String, value: String) {
-
-    fun updateProviderOption(providerId: String, key: String, value: String) {
         val settings = providerSettings(providerId)
         updateProviderSettings(providerId, settings.copy(options = settings.options + (key to value)))
     }
