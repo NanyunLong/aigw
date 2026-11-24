@@ -244,7 +244,9 @@ class CallLogStore(
                 daily[day] = remaining
                 store.write(dayKeyOf(day), remaining.toJson().toString())
             }
-                      groups.remove(day)
+            val g = (groups[day] ?: UsageGroups()).minus(removed)
+            if (g.byProvider.isEmpty() && g.byModel.isEmpty()) {
+                groups.remove(day)
                 store.delete(groupKeyOf(day))
             } else {
                 groups[day] = g
@@ -493,7 +495,7 @@ class CallLogStore(
     private fun spillField(dir: File, id: String, field: CallTextField, content: String) {
         if (content.length <= MAX_SUMMARY_CHARS) {
             // 没有溢出：清掉可能残留的旧文件（同 id 不会重发，防御性清理）
-  .requestBodyle(dir, spillFileName(id, field)).delete()
+            File(dir, spillFileName(id, field)).delete()
             return
         }
         runCatching {
@@ -558,7 +560,6 @@ class CallLogStore(
         private const val USAGE_PREFIX = "usage/"
         private const val TOTAL_KEY = "usage/total"
         private const val DAY_PREFIX = "usage/day/"
-        private const val GROUP_PREFIX = "usage/grp/"
 
         /** 每日聚合保留天数（含今天）。 */
         const val RETENTION_DAYS = 30
@@ -677,16 +678,4 @@ private fun usageStatsFromJson(raw: String): UsageStats {
         unpriced = obj.get("unpriced")?.asLong ?: 0L,
     )
 }
-s = obj.get("cachedTokens")?.asLong ?: 0L,
-        success = obj.get("success")?.asLong ?: 0L,
-        failed = obj.get("failed")?.asLong ?: 0L,
-        aborted = obj.get("aborted")?.asLong ?: 0L,
-        retried = obj.get("retried")?.asLong ?: 0L,
-        costMicros = obj.get("costMicros")?.asLong ?: 0L,
-        unpriced = obj.get("unpriced")?.asLong ?: 0L,
-    )
-}
-sLong ?: 0L,
-        unpriced = obj.get("unpriced")?.asLong ?: 0L,
-    )
-}
+
