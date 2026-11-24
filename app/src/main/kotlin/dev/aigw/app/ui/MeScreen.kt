@@ -5,6 +5,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.width
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material3.AlertDialog
@@ -416,13 +417,18 @@ fun UsageScreen(state: AppUiState, viewModel: AppViewModel, onBack: () -> Unit) 
         },
     ) {
         SectionCard(enterIndex = 3) {
+            SectionLabel("总览")
+            OverviewGrid(state.total)
+        }
+
+        SectionCard(enterIndex = 4) {
             SectionLabel("近期趋势")
             TrendSection(state)
         }
 
-        SectionCard(enterIndex = 4) {
+        SectionCard(enterIndex = 5) {
             SectionLabel("今日")
-            CacheHitGauge(state.today)
+            CacheHitGauge(state.today, highlight = true)
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
                 StatCell(formatCount(state.today.requests), "请求")
                 StatCell(formatCount(state.today.success), "成功")
@@ -432,7 +438,7 @@ fun UsageScreen(state: AppUiState, viewModel: AppViewModel, onBack: () -> Unit) 
             CostLine(state.today)
         }
 
-        SectionCard(enterIndex = 5) {
+        SectionCard(enterIndex = 6) {
             SectionLabel("累计")
             CacheHitGauge(state.total)
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
@@ -444,7 +450,12 @@ fun UsageScreen(state: AppUiState, viewModel: AppViewModel, onBack: () -> Unit) 
             CostLine(state.total)
         }
 
-        SectionCard(enterIndex = 6) {
+        SectionCard(enterIndex = 7) {
+            SectionLabel("按天明细")
+            DailyBreakdown(state)
+        }
+
+        SectionCard(enterIndex = 8) {
             SectionLabel("存储")
             val report = state.storage
             if (report == null) {
@@ -457,6 +468,127 @@ fun UsageScreen(state: AppUiState, viewModel: AppViewModel, onBack: () -> Unit) 
                 StorageDetail(state, report, viewModel)
             }
         }
+    }
+}
+
+
+/**
+ * 总览：累计大数字两排六格，用现有 StatCell 保持视觉一致。
+ * 第一排：输入/输出/请求；第二排：命中率/缓存命中/费用。
+ */
+@Composable
+private fun OverviewGrid(stats: UsageStats) {
+    val gold = LocalAppColors.current.goldStart
+    Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        Row(Modifier.fillMaxWidth()) {
+            StatCell(formatTokens(stats.promptTokens), "输入合计", Modifier.weight(1f))
+            StatCell(formatTokens(stats.completionTokens), "输出合计", Modifier.weight(1f))
+            StatCell(formatCount(stats.requests), "累计请求", Modifier.weight(1f))
+        }
+        Row(Modifier.fillMaxWidth()) {
+            StatCell(
+                value = if (stats.requests > 0) String.format(Locale.US, "%.0f%%", stats.cacheHitRatio * 100) else "—",
+                label = "命中率",
+                modifier = Modifier.weight(1f),
+            )
+            StatCell(formatTokens(stats.cachedPromptTokens), "缓存命中", Modifier.weight(1f))
+            StatCell(formatMicroUsd(stats.costMicros), "费用（美元）", Modifier.weight(1f))
+        }
+    }
+}
+
+/**
+ * 按天明细：7/14 日切换 + 每日一行（输入/输出/请求/命中率）。
+ * 复用 TrendSection 的天数切换状态，无数据的日期显示 "—"。
+ */
+@Composable
+private fun DailyBreakdown(state: AppUiState) {
+    var days by remember { mutableStateOf(TREND_DAYS) }
+    val daily = remember(state.daily, days) { state.daily.takeLast(days) }
+    val todayStart = startOfDay(System.currentTimeMillis())
+
+    // 天数切换
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.End,
+    ) {
+        for (d in listOf(7, 14)) {
+            Text(
+                text = "${d}日",
+                style = MaterialTheme.typography.labelSmall,
+                color = if (days == d) LocalAppColors.current.goldStart else MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier
+                    .clip(CircleShape)
+                    .clickable { days = d }
+                    .padding(horizontal = 10.dp, vertical = 4.dp),
+            )
+        }
+    }
+
+    Column(Modifier.fillMaxWidth().padding(top = 8.dp)) {
+        daily.forEachIndexed { index, stats ->
+            if (index > 0) {
+                HorizontalDivider(
+                    color = MaterialTheme.colorScheme.outlineVariant,
+                    modifier = Modifier.padding(vertical = 6.dp),
+                )
+            }
+            DailyRow(stats, todayStart - (daily.size - 1 - index) * 86_400_000L)
+        }
+    }
+}
+
+/** 一行：日期 + 输入/输出/请求/命中率 四格。 */
+@Composable
+private fun DailyRow(stats: UsageStats, dayMillis: Long) {
+    val hasData = stats.requests > 0
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(
+            text = dayLabel(dayMillis),
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.width(44.dp),
+        )
+        if (hasData) {
+            Row(Modifier.weight(1f), horizontalArrangement = Arrangement.SpaceEvenly) {
+                DailyCell(formatTokens(stats.promptTokens), "输入")
+                DailyCell(formatTokens(stats.completionTokens), "输出")
+                DailyCell(formatCount(stats.requests), "请求")
+                DailyCell(
+                    value = if (stats.requests > 0) String.format(Locale.US, "%.0f%%", stats.cacheHitRatio * 100) else "—",
+                    label = "命中率",
+                )
+            }
+        } else {
+            Text(
+                text = "—",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.weight(1f),
+                textAlign = TextAlign.Center,
+            )
+        }
+    }
+}
+
+/** 小格：数值 + 标签，紧凑排列。 */
+@Composable
+private fun DailyCell(value: String, label: String) {
+    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+        Text(
+            text = value,
+            style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
+            fontWeight = FontWeight.Light,
+            color = MaterialTheme.colorScheme.onSurface,
+        )
+        Text(
+            text = label,
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
     }
 }
 
@@ -607,6 +739,7 @@ private fun TrendSection(state: AppUiState) {
     }
 
     val gold = LocalAppColors.current.goldStart
+    val totalTokens = remember(trend) { trend.sumOf { it.promptTokens + it.completionTokens } }
     TrendChart(trend, startOfDay(System.currentTimeMillis()))
     Row(
         verticalAlignment = Alignment.CenterVertically,
@@ -615,7 +748,7 @@ private fun TrendSection(state: AppUiState) {
         LegendDot(gold, "输入")
         LegendDot(DeepInk, "输出")
         Text(
-            text = "近 ${trend.size} 天",
+            text = "近 ${trend.size} 天 · ${formatTokens(totalTokens)}",
             style = MaterialTheme.typography.labelSmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             modifier = Modifier.weight(1f),
@@ -702,7 +835,7 @@ private fun DrawScope.drawSeries(xs: FloatArray, ys: FloatArray, baseline: Float
         lineTo(xs.last(), baseline)
         close()
     }
-    drawPath(fillPath, color = color.copy(alpha = 0.12f))
+    drawPath(fillPath, color = color.copy(alpha = 0.16f))
     val linePath = Path().apply {
         moveTo(xs[0], ys[0])
         for (i in 1 until xs.size) lineTo(xs[i], ys[i])
@@ -710,8 +843,12 @@ private fun DrawScope.drawSeries(xs: FloatArray, ys: FloatArray, baseline: Float
     drawPath(
         linePath,
         color = color,
-        style = Stroke(width = 1.6.dp.toPx(), cap = StrokeCap.Round, join = StrokeJoin.Round),
+        style = Stroke(width = 2.dp.toPx(), cap = StrokeCap.Round, join = StrokeJoin.Round),
     )
+    // 数据点圆点：实心 3dp
+    for (i in xs.indices) {
+        drawCircle(color, radius = 3.dp.toPx(), center = Offset(xs[i], ys[i]))
+    }
 }
 
 /** 坐标轴上限缩写：1.2k / 3.4M。 */
@@ -754,11 +891,13 @@ private fun CostLine(stats: UsageStats) {
  * 各段用 offset 依次错开。没有输入 token 时只显示「—」，不画环（不编造 0%）。
  */
 @Composable
-private fun CacheHitGauge(stats: UsageStats) {
+private fun CacheHitGauge(stats: UsageStats, highlight: Boolean = false) {
     val hitColor = MaterialTheme.colorScheme.tertiary
     val missColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.55f)
     val outputColor = MaterialTheme.colorScheme.secondary.copy(alpha = 0.75f)
     val trackColor = MaterialTheme.colorScheme.surfaceVariant
+    val gold = LocalAppColors.current.goldStart
+    val centerColor = if (highlight) gold else MaterialTheme.colorScheme.onSurface
     val hit = stats.cachedTokens.coerceAtMost(stats.promptTokens)
     val miss = (stats.promptTokens - hit).coerceAtLeast(0)
     val output = stats.completionTokens
@@ -771,7 +910,7 @@ private fun CacheHitGauge(stats: UsageStats) {
     ) {
         Box(contentAlignment = Alignment.Center) {
             Canvas(Modifier.size(72.dp)) {
-                val stroke = 7.dp.toPx()
+                val stroke = 8.dp.toPx()
                 val inset = stroke / 2
                 val arcSize = Size(size.width - stroke, size.height - stroke)
                 val topLeft = Offset(inset, inset)
@@ -812,7 +951,7 @@ private fun CacheHitGauge(stats: UsageStats) {
             Text(
                 text = if (percent != null) "${String.format(Locale.US, "%.0f", percent)}%" else "—",
                 style = MaterialTheme.typography.titleMedium.copy(fontFamily = FontFamily.Monospace),
-                color = MaterialTheme.colorScheme.onSurface,
+                color = centerColor,
                 fontWeight = FontWeight.SemiBold,
             )
         }
@@ -839,7 +978,7 @@ private fun GaugeLegend(label: String, tokens: Long, color: androidx.compose.ui.
     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
         Box(
             Modifier
-                .size(7.dp)
+                .size(8.dp)
                 .clip(androidx.compose.foundation.shape.CircleShape)
                 .background(color),
         )
