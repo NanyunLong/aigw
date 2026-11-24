@@ -487,11 +487,11 @@ private fun OverviewGrid(stats: UsageStats) {
         }
         Row(Modifier.fillMaxWidth()) {
             StatCell(
-                value = if (stats.requests > 0) String.format(Locale.US, "%.0f%%", stats.cacheHitRatio * 100) else "—",
+                value = if (stats.cacheHitPercent != null) String.format(Locale.US, "%.0f%%", stats.cacheHitPercent) else "—",
                 label = "命中率",
                 modifier = Modifier.weight(1f),
             )
-            StatCell(formatTokens(stats.cachedPromptTokens), "缓存命中", Modifier.weight(1f))
+            StatCell(formatTokens(stats.cachedTokens), "缓存命中", Modifier.weight(1f))
             StatCell(formatMicroUsd(stats.costMicros), "费用（美元）", Modifier.weight(1f))
         }
     }
@@ -558,7 +558,7 @@ private fun DailyRow(stats: UsageStats, dayMillis: Long) {
                 DailyCell(formatTokens(stats.completionTokens), "输出")
                 DailyCell(formatCount(stats.requests), "请求")
                 DailyCell(
-                    value = if (stats.requests > 0) String.format(Locale.US, "%.0f%%", stats.cacheHitRatio * 100) else "—",
+                    value = if (stats.cacheHitPercent != null) String.format(Locale.US, "%.0f%%", stats.cacheHitPercent) else "—",
                     label = "命中率",
                 )
             }
