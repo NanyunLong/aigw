@@ -829,7 +829,6 @@ class GatewayHttpServer(
                         engine.pool.coolDown(currentRoute.providerId, account.uid, failoverCfg.accountCooldownMs)
                         pMetrics.record(false, elapsed, "quota_exhausted")
                         providerLastError = error.message
-                        lastHttpStatus = call.status
                         failureKinds.add(error.kind)
                         finishActiveRequest()
                         gateHandle.release()
