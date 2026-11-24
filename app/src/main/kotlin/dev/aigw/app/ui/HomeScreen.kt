@@ -351,7 +351,43 @@ private fun UsageSummaryCard(state: AppUiState, openUsage: () -> Unit) {
                 modifier = Modifier.weight(1f),
             )
         }
+        // 迷你趋势：今日输入 · 命中率 · 较昨日变化
+        val summary = buildTodaySummary(state)
+        if (summary != null) {
+            HorizontalDivider(
+                color = MaterialTheme.colorScheme.outlineVariant,
+                modifier = Modifier.padding(vertical = 10.dp),
+            )
+            Text(
+                text = summary,
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
     }
+}
+
+/** 组装「今日输入 X · 命中率 Y% · 较昨日 ±Z%」一行；数据不足时返回 null。 */
+private fun buildTodaySummary(state: AppUiState): String? {
+    val today = state.today
+    if (today.requests <= 0) return null
+    val parts = mutableListOf<String>()
+    parts.add("今日输入 ${formatTokens(today.promptTokens)}")
+    today.cacheHitPercent?.let { parts.add("命中率 ${String.format(Locale.US, "%.0f", it)}%") }
+    // 较昨日：daily 最后两天都有请求才显示
+    if (state.daily.size >= 2) {
+        val yesterday = state.daily[state.daily.size - 2]
+        if (yesterday.requests > 0 && yesterday.totalTokens > 0) {
+            val diff = ((today.totalTokens - yesterday.totalTokens).toFloat() / yesterday.totalTokens * 100).toInt()
+            if (diff != 0) {
+                val arrow = if (diff > 0) "↑" else "↓"
+                parts.add("较昨日 $arrow${kotlin.math.abs(diff)}%")
+            } else {
+                parts.add("较昨日持平")
+            }
+        }
+    }
+    return parts.joinToString(" · ")
 }
 
 /** 首页可执行的三件事。 */
