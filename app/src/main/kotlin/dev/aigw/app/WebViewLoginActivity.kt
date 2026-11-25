@@ -65,9 +65,36 @@ class WebViewLoginActivity : Activity() {
         CookieManager.getInstance().setAcceptCookie(true)
         CookieManager.getInstance().setAcceptThirdPartyCookies(wv, true)
         wv.webViewClient = object : WebViewClient() {
+            override fun onPageStarted(view: WebView, url: String, favicon: android.graphics.Bitmap?) {
+                // 文档一开始就挂错误钩子，白屏时能拿到真实 JS 异常（诊断用，不影响页面）。
+                view.evaluateJavascript(
+                    "window.__aigwErrs=[];window.addEventListener('error',function(e){" +
+                        "window.__aigwErrs.push((e.message||'')+' @'+(e.filename||'')+':'+(e.lineno||0));},true);" +
+                        "window.addEventListener('unhandledrejection',function(e){" +
+                        "window.__aigwErrs.push('reject:'+String(e.reason).slice(0,120));});",
+                    null,
+                )
+            }
+
             override fun onPageFinished(view: WebView, url: String) {
                 // 页面加载完成后延迟检测：登录成功跳转后 localStorage 可能异步写入
                 handler.postDelayed({ detectNow(sup) }, 500)
+                // 白屏诊断：3 秒后若 #app 仍为空，把 JS 错误与资源失败 toast 出来
+                handler.postDelayed({
+                    view.evaluateJavascript(
+                        "(function(){var a=document.getElementById('app');" +
+                            "var n=a?a.innerHTML.length:-1;" +
+                            "if(n>200)return 'ok:'+n;" +
+                            "var errs=(window.__aigwErrs||[]).slice(0,3).join(' | ');" +
+                            "var res=performance.getEntriesByType('resource').filter(function(r){" +
+                            "return r.responseStatus>=400||r.transferSize===0&&r.decodedBodySize===0;})" +
+                            ".slice(0,3).map(function(r){return r.name.split('/').pop();}).join(',');" +
+                            "return 'app='+n+' errs='+errs+' res='+res+' url='+location.href;})()",
+                    ) { r ->
+                        val s = r?.trim('"') ?: ""
+                        if (s.startsWith("app=")) toast("白屏诊断：$s".take(300))
+                    }
+                }, 3000)
             }
         }
         wv.addJavascriptInterface(ExtractBridge(sup), JS_BRIDGE)
@@ -92,6 +119,9 @@ class WebViewLoginActivity : Activity() {
         val wv = webView
         if (wv != null && wv.canGoBack()) wv.goBack() else super.onBackPressed()
     }
+
+    /** 读当前 URL：诊断白屏时确认 WebView 实际停在哪个地址。 */
+    private fun currentUrl(): String = webView?.url.orEmpty()
 
     /** 读取 localStorage 目标键（JS），有值则由桥提交回 Kotlin 提取。 */
     private fun detectNow(sup: WebViewExtractSupport) {
@@ -138,7 +168,7 @@ class WebViewLoginActivity : Activity() {
             if (allKeys.isNotEmpty() && !diagnosed) {
                 diagnosed = true
                 val sample = allKeys.split('|').take(8).joinToString("、")
-                toast("已登录但没抓到目标键。页面上有这些存储键：$sample")
+            toast("已登录但没抓到目标键（${currentUrl().take(60)}）。页面上有这些存储键：$sample")
             }
             scheduleNextDetect(sup)
             return
