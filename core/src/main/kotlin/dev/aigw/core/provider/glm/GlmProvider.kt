@@ -48,7 +48,10 @@ class GlmProvider(
     override val displayName: String = "智谱清言"
     override val authKind: AuthKind = AuthKind.WEBVIEW_EXTRACT
 
-    override val loginUrl: String = "https://chatglm.cn"
+    // chatglm.cn 已改版成 AgentMore（新平台），老「智谱清言」迁到 original.chatglm.cn。
+    // chatglm_refresh_token 键只存在老清言的 localStorage，AgentMore 登录存的是另一套 token，
+    // 用它换 refresh 恒 401「凭证无效」。必须打开老清言域名。
+    override val loginUrl: String = "https://original.chatglm.cn"
     override val localStorageKeys: List<String> = listOf(REFRESH_TOKEN_KEY)
     // 兜底：部分登录方式（扫码/第三方）把 refresh_token 放在 Cookie 里而不是 localStorage。
     override val cookieNames: List<String> = listOf(REFRESH_TOKEN_KEY)
