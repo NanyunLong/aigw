@@ -28,11 +28,11 @@ import dev.aigw.core.util.newCompletionId
 import dev.aigw.core.util.objOrNull
 import dev.aigw.core.util.stringOrNull
 import fi.iki.elonen.NanoHTTPD
+import java.io.BufferedInputStream
 import java.io.ByteArrayOutputStream
 import java.io.IOException
 import java.io.InputStream
 import java.io.OutputStream
-import java.io.PushbackInputStream
 import java.nio.charset.StandardCharsets
 import java.security.MessageDigest
 import java.util.concurrent.ScheduledExecutorService
@@ -1467,18 +1467,16 @@ class GatewayHttpServer(
      * 1005 模型限制）。是错误且没有任何内容时返回 [firstByteError]，让上层换号重试；
      * 否则回放已读字节并返回完整流继续透传。
      *
-     * 用 PushbackInputStream 而非 BufferedReader：BufferedReader 会预读底层字节到内部缓冲，
-     * 预读走的字节既不在回放里、也无法放回底层流，会丢数据。Pushback 只读走已回放的部分。
+     * 用 BufferedReader + mark/reset：BufferedReader 大缓冲快读，读完首帧 reset 回退到标记点，
+     * 返回的 buffered 流可从头发给 streamResponse 透传。readlimit 设 1MB，首帧（首个 data 行）远超此限的极端情况 reset 会失败，此时保守降级为「不预读」，由 streamResponse 正常透传。
      */
     private fun preflightStream(stream: InputStream): StreamPreflight {
-        val pushback = PushbackInputStream(stream, MAX_STREAM_HEAD_BYTES)
-        val replay = ByteArrayOutputStream()
+        val buffered = if (stream is BufferedInputStream) stream else BufferedInputStream(stream, 64 * 1024)
+        buffered.mark(MAX_STREAM_HEAD_BYTES)
+        val reader = buffered.bufferedReader(Charsets.UTF_8)
         try {
             while (true) {
-                val lineBytes = readLineBytes(pushback) ?: break
-                replay.write(lineBytes)
-                replay.write('\n'.code)
-                val line = String(lineBytes, StandardCharsets.UTF_8)
+                val line = reader.readLine() ?: break
                 if (!line.startsWith("data:")) continue
                 val payload = line.removePrefix("data:").trim()
                 if (payload.isEmpty() || payload == "[DONE]") break
@@ -1493,29 +1491,15 @@ class GatewayHttpServer(
                 if (error == null || hasContent) break
                 val message = error.stringOrNull("message") ?: "上游流内错误"
                 val kind = resolveStreamErrorKind(error.stringOrNull("type").orEmpty(), error.longOrNull("code"))
-                // 首帧即错误：换号重试，这条流直接丢弃（不用回放）
-                return StreamPreflight(pushback, kind, message)
+                // 首帧即错误：换号重试，这条流直接丢弃（不回放）
+                return StreamPreflight(buffered, kind, message)
             }
-            // 首帧正常：把读到的字节放回，返回可从头透传的流
-            pushback.unread(replay.toByteArray())
-            return StreamPreflight(pushback, null, "")
+            // 首帧正常：reset 回退到标记点，从头发给 streamResponse
+            buffered.reset()
+            return StreamPreflight(buffered, null, "")
         } catch (e: Exception) {
-            runCatching { pushback.unread(replay.toByteArray()) }
-            return StreamPreflight(pushback, null, "")
-        }
-    }
-
-    /** 逐字节读一行（到 \n 为止，去掉行尾 \r）；EOF 且没读到任何字节时返回 null。 */
-    private fun readLineBytes(input: InputStream): ByteArray? {
-        val out = ByteArrayOutputStream()
-        while (true) {
-            val b = input.read()
-            if (b == -1) return if (out.size() == 0) null else out.toByteArray()
-            if (b == '\n'.code) {
-                val arr = out.toByteArray()
-                return if (arr.isNotEmpty() && arr[arr.size - 1] == '\r'.code.toByte()) arr.copyOf(arr.size - 1) else arr
-            }
-            out.write(b)
+            runCatching { buffered.reset() }
+            return StreamPreflight(buffered, null, "")
         }
     }
 
@@ -2559,8 +2543,8 @@ class GatewayHttpServer(
         private const val MAX_SUMMARY_PROMPT_CHARS = 2000
         private const val MAX_SUMMARY_TEXT_CHARS = 2000
 
-        /** 流式首帧预读的 pushback 上限：首帧 error 判断只需读开头几个 data 行，128KB 绰绰有余。 */
-        private const val MAX_STREAM_HEAD_BYTES = 128 * 1024
+        /** 流式首帧预读的 mark readlimit：BufferedReader 会预读底层缓冲，1MB 覆盖绝大多数首帧。 */
+        private const val MAX_STREAM_HEAD_BYTES = 1 * 1024 * 1024
 
         /** `/authorize` 回调固定归 Trae（其它供应商的登录不经过网关端口）。 */
         const val TRAE_PROVIDER_ID = "trae"

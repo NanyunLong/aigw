@@ -160,7 +160,10 @@ class WebViewLoginActivity : Activity() {
             toast("登录成功：${outcome.nickname.ifEmpty { outcome.uid }}")
             finish()
         } else {
-            toast("登录失败：${outcome.error}")
+            // 校验失败：带上 token 片段和来源键名，方便定位是 token 错还是签名错
+            val tokenSample = resolvedStorage.values.firstOrNull { it.isNotEmpty() }?.take(24).orEmpty()
+            val keySample = resolvedStorage.entries.firstOrNull { it.value.isNotEmpty() }?.key.orEmpty()
+            toast("登录失败：${outcome.error}｜token=${tokenSample}… 键=$keySample")
             scheduleNextDetect(sup)
         }
     }
