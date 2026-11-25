@@ -145,7 +145,7 @@ class QwenProvider internal constructor(
 
         val conn = try {
             HttpSupport.open(
-                "$chatBase(credential)/chat/completions",
+                "${chatBase(credential)}/chat/completions",
                 "POST",
                 chatHeaders(credential, streaming),
                 body,
@@ -276,8 +276,8 @@ class QwenProvider internal constructor(
     )
 
     private fun chatHeaders(credential: Credential, streaming: Boolean): Map<String, String> = buildMap {
-        put("Content-Type" to "application/json")
-        put("Accept" to if (streaming) "text/event-stream" else "application/json")
+        put("Content-Type", "application/json")
+        put("Accept", if (streaming) "text/event-stream" else "application/json")
         put("Authorization", "Bearer ${credential.accessToken}")
         put("User-Agent", CLIENT_UA)
     }
@@ -285,7 +285,7 @@ class QwenProvider internal constructor(
     private fun fetchModels(credential: Credential): List<ProviderModel> {
         val conn = try {
             HttpSupport.open(
-                "$chatBase(credential)/models",
+                "${chatBase(credential)}/models",
                 "GET",
                 mapOf("Authorization" to "Bearer ${credential.accessToken}", "User-Agent" to CLIENT_UA),
                 null,
@@ -342,9 +342,9 @@ class QwenProvider internal constructor(
             accessToken = accessToken,
             refreshToken = o.get("refresh_token")?.asString.orEmpty()
                 .ifEmpty { o.get("refreshToken")?.asString.orEmpty() },
-            expiresAt = o.get("expires_in")?.asLong.takeIf { it > 0 }
+            expiresAt = o.get("expires_in")?.asLong?.takeIf { it > 0 }
                 ?.let { nowMillis() / 1000 + it }
-                ?: o.get("expiresAt")?.asLong.takeIf { it > 0 }
+                ?: o.get("expiresAt")?.asLong?.takeIf { it > 0 }
                 ?: 0L,
             resourceUrl = o.get("resource_url")?.asString.orEmpty()
                 .ifEmpty { o.get("resourceUrl")?.asString.orEmpty() },
