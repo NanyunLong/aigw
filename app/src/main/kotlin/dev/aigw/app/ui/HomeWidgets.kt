@@ -822,10 +822,13 @@ private fun HomeLegendDot(color: Color, text: String) {
  * 进入首页拉一次；账号集合变化时重拉。额度中心与供应商详情页拉的是同一份数据，
  * 这里只在组件被添加到首页时才会发生。
  */
+/**
+ * 主页配额池：与「额度中心」同源——按供应商分组，组内合并同名额度包；
+ * 没有额度包的供应商（如小浣熊走积分余额）用积分余额兜底显示。
+ * 进首页拉一次 + 点「刷新额度」重拉。
+ */
 @Composable
 internal fun HomeQuotaWidget(state: AppUiState, viewModel: AppViewModel) {
-    // 聚合“全部供应商”的账号，而不是只看 antigravity：用户加了任意供应商（含自定义），
-    // 只要它有账号，就该在配额池里出现（没额度接口的显示“尚未拉取配额”）。
     val accounts = state.accounts
     if (accounts.isEmpty()) {
         SectionCard {
@@ -839,19 +842,14 @@ internal fun HomeQuotaWidget(state: AppUiState, viewModel: AppViewModel) {
         return
     }
 
-    // 重拉触发器：进首页拉一次、账号集合变化重拉、点刷新按钮重拉；
-    // 拉取失败（返回空列表）不会写进 state，所以再点一次刷新即可重试
     var refreshTick by remember { mutableStateOf(0) }
     LaunchedEffect(accounts.map { "${it.providerId}/${it.uid}" }, refreshTick) {
+        // 与额度中心一致：creditInfo（积分余额）+ creditPacks（额度包）都拉
         accounts.forEach { viewModel.loadCreditPacks(it.providerId, it.uid) }
     }
 
-    // 按供应商 → 国内/国外分组，组内所有账号的同名额度包合并
-    data class GroupKey(val providerId: String, val region: String)
-    val groups = accounts.groupBy { account ->
-        val region = viewModel.accountRegion(account.providerId, account.uid).ifEmpty { "cn" }
-        GroupKey(account.providerId, region)
-    }
+    // 按供应商分组（不再按区域过滤：非 RegionAware 供应商 region 为空串会被归到 cn，造成丢失）
+    val groups = accounts.groupBy { it.providerId }
 
     SectionCard {
         SectionHeader("上游配额池")
@@ -860,27 +858,29 @@ internal fun HomeQuotaWidget(state: AppUiState, viewModel: AppViewModel) {
         }
         // 有额度的排前面，无额度的排最后
         val sortedGroups = groups.entries.sortedWith(
-            compareByDescending<Map.Entry<GroupKey, List<dev.aigw.core.pool.AccountStatus>>> { entry ->
+            compareByDescending<Map.Entry<String, List<dev.aigw.core.pool.AccountStatus>>> { entry ->
                 entry.value.any { acc -> state.creditPacks["${acc.providerId}/${acc.uid}"].orEmpty().isNotEmpty() }
-            }.thenBy { it.key.providerId }.thenBy { it.key.region }
+            }.thenBy { it.key }
         )
-        sortedGroups.forEach { (key, accs) ->
-            val provider = state.providers.firstOrNull { it.id == key.providerId }
-            val providerName = provider?.displayName ?: key.providerId
-            val regionLabel = when (key.region) {
-                "cn" -> "国内"
-                "global" -> "国外"
-                else -> key.region
-            }
+        sortedGroups.forEach { (providerId, accs) ->
+            val provider = state.providers.firstOrNull { it.id == providerId }
+            val providerName = provider?.displayName ?: providerId
             Text(
-                text = "$providerName · $regionLabel（${accs.size} 个账号）",
+                text = "$providerName（${accs.size} 个账号）",
                 style = MaterialTheme.typography.bodyMedium,
                 fontWeight = FontWeight.SemiBold,
             )
-            // 合并该组所有账号的同名 QuotaPack
+            // 合并该供应商所有账号的同名 QuotaPack
             val merged = LinkedHashMap<String, dev.aigw.core.provider.QuotaPack>()
+            // 没有额度包的账号，把积分余额累加进来兜底
+            var balanceFallback = 0L
+            var hasBalance = false
             for (acc in accs) {
                 val packs = state.creditPacks["${acc.providerId}/${acc.uid}"].orEmpty()
+                if (packs.isEmpty() && acc.creditsKnown) {
+                    balanceFallback += acc.credits
+                    hasBalance = true
+                }
                 for (pack in packs) {
                     val existing = merged[pack.name]
                     if (existing == null) {
@@ -898,6 +898,9 @@ internal fun HomeQuotaWidget(state: AppUiState, viewModel: AppViewModel) {
                         )
                     }
                 }
+            }
+            if (hasBalance) {
+                merged["积分余额"] = dev.aigw.core.provider.QuotaPack(name = "积分余额", group = "余额", remain = balanceFallback)
             }
             if (merged.isEmpty()) {
                 Text(

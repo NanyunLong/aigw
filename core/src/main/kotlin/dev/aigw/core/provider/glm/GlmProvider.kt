@@ -165,12 +165,21 @@ class GlmProvider(
         if (refreshToken.isEmpty()) {
             throw IllegalStateException("未在 localStorage/Cookie 里找到 chatglm_refresh_token，请确认已登录")
         }
-        // 校验：用 refresh_token 换一次 access_token，确认凭证有效
-        val access = runCatching { acquireToken(Credential(refreshToken)) }.getOrElse {
-            throw IllegalStateException("凭证校验失败：${it.message}")
-        }
-        val uid = access.userId.ifEmpty { refreshToken.take(16) }
+        // 只从 token 提取 uid（JWT payload 的 sub/user_id），不做在线校验——
+        // 在线校验会多打一次上游，网络抖动或上游接口变动就整段登录失败。
+        val uid = jwtUserId(refreshToken).ifEmpty { refreshToken.take(16) }
         return ProviderAccount(id, uid, "智谱账号", Credential(refreshToken).toJson())
+    }
+
+    /** 从 JWT refresh_token 的 payload 里取 sub / user_id（取不到返回空串，不抛异常）。 */
+    private fun jwtUserId(jwt: String): String {
+        if (jwt.count { it == '.' } != 2) return ""
+        return runCatching {
+            val payload = jwt.split('.')[1]
+            val decoded = String(java.util.Base64.getUrlDecoder().decode(payload), Charsets.UTF_8)
+            val obj = JsonParser.parseString(decoded).asJsonObject
+            obj.get("sub")?.asString.orEmpty().ifEmpty { obj.get("user_id")?.asString.orEmpty() }
+        }.getOrDefault("")
     }
 
     // ------------------------------------------------------------------ 内部

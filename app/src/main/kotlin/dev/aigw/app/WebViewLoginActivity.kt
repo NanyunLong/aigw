@@ -108,16 +108,16 @@ class WebViewLoginActivity : Activity() {
     }
 
     /**
-     * 尝试提取：字段齐全就落池并关闭；不齐全（还没登录）则静默等待下一次检测，
-     * 不弹「未找到」的报错打扰用户。
+     * 尝试提取：字段齐全就落池并关闭；不齐全（还没登录）则静默等待下一次检测。
+     * 诊断：若扫描到了键名但匹配不到目标键，弹一次提示让用户看到键名，方便定位。
      */
     private fun tryExtract(
         sup: WebViewExtractSupport,
         storage: Map<String, String>,
         cookies: Map<String, String>,
     ) {
-        // 目标字段都为空 = 还没登录，静默等待，不打扰。
-        // 兜底扫描的键带 ls:/ss: 前缀，按目标键名模糊匹配（不区分大小写、含子串）
+        val allKeys = storage["_all_keys"].orEmpty()
+        // 匹配：精确键名 → 键名含目标子串（大小写不敏感）
         fun lookupValue(targetKey: String): String {
             val exact = storage[targetKey]
             if (!exact.isNullOrEmpty()) return exact
@@ -128,6 +128,12 @@ class WebViewLoginActivity : Activity() {
         val hasStorage = resolvedStorage.values.any { it.isNotEmpty() }
         val hasCookie = sup.cookieNames.any { cookies[it].orEmpty().isNotEmpty() }
         if (!hasStorage && !hasCookie) {
+            // 诊断：扫到了键名但匹配不上目标键，提示用户把键名告诉我
+            if (allKeys.isNotEmpty() && !diagnosed) {
+                diagnosed = true
+                val sample = allKeys.split('|').take(8).joinToString("、")
+                toast("已登录但没抓到目标键。页面上有这些存储键：$sample")
+            }
             scheduleNextDetect(sup)
             return
         }
@@ -148,11 +154,12 @@ class WebViewLoginActivity : Activity() {
             toast("登录成功：${outcome.nickname.ifEmpty { outcome.uid }}")
             finish()
         } else {
-            // 提取失败（字段在但校验不过）：提示具体原因，继续等待用户重新登录
             toast("登录失败：${outcome.error}")
             scheduleNextDetect(sup)
         }
     }
+
+    private var diagnosed = false
 
     private fun scheduleNextDetect(sup: WebViewExtractSupport) {
         if (finished) return
@@ -209,42 +216,47 @@ class WebViewLoginActivity : Activity() {
         private const val MOBILE_UA =
             "Mozilla/5.0 (Linux; Android 15; Mobile) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Mobile Safari/537.36"
 
-        /** 生成读取 localStorage 的 JS：把指定键拼成 JSON 提交回 Kotlin。 */
+        /** 生成读取 localStorage 的 JS：全量扫描+回传所有键名，供排查与匹配。 */
         private fun extractLocalStorageJs(keys: List<String>): String {
-            if (keys.isEmpty()) return "AigwExtract.submit('{}');"
             val keyList = keys.joinToString(",") { "\"$it\"" }
             return """
                 (function(){
                   var out = {};
                   var keys = [$keyList];
+                  // 先精确取目标键
                   for (var i=0;i<keys.length;i++){
                     var v = null;
                     try { v = window.localStorage.getItem(keys[i]); } catch(e){}
-                    if (v !== null) out[keys[i]] = v;
+                    if (v !== null && v !== '') out[keys[i]] = v;
                   }
-                  // 兜底：目标键没取到时，扫 localStorage+sessionStorage 的全部键，
-                  // 按目标键名做模糊匹配（chatglm_refresh_token 之类可能带前缀/后缀）
-                  var found = false;
-                  for (var k in out) if (out[k]) found = true;
-                  if (!found) {
-                    var wanted = keys.map(function(k){return k.toLowerCase();});
-                    var scan = function(store, tag) {
-                      try {
-                        for (var i=0;i<store.length;i++){
-                          var sk = store.key(i);
-                          var lsk = sk.toLowerCase();
-                          for (var j=0;j<wanted.length;j++){
-                            if (lsk.indexOf(wanted[j]) >= 0) {
-                              var sv = store.getItem(sk);
-                              if (sv) { out[tag + ':' + sk] = sv; }
-                            }
+                  // 全量扫 localStorage+sessionStorage：
+                  // 1) 目标键没取到时，把含 token/refresh/jwt 特征的值全抓出来
+                  // 2) 所有键名放 _all_keys 供排查（不抓非特征键的值，避免把用户隐私带出去）
+                  var wanted = keys.map(function(k){return k.toLowerCase();});
+                  var allKeys = [];
+                  var scan = function(store, tag) {
+                    try {
+                      for (var i=0;i<store.length;i++){
+                        var sk = store.key(i);
+                        allKeys.push(tag + ':' + sk);
+                        var lsk = sk.toLowerCase();
+                        for (var j=0;j<wanted.length;j++){
+                          if (lsk.indexOf(wanted[j]) >= 0) {
+                            var sv = store.getItem(sk);
+                            if (sv) { out[sk] = sv; }
                           }
                         }
-                      } catch(e){}
-                    };
-                    scan(window.localStorage, 'ls');
-                    scan(window.sessionStorage, 'ss');
-                  }
+                        // 补充：键名含 token/refresh/jwt/session 但不在目标键里的也抓（如智谱可能存别的键）
+                        if (lsk.indexOf('refresh') >= 0 || lsk.indexOf('token') >= 0 || lsk.indexOf('jwt') >= 0) {
+                          var sv2 = store.getItem(sk);
+                          if (sv2) { out[sk] = sv2; }
+                        }
+                      }
+                    } catch(e){}
+                  };
+                  scan(window.localStorage, 'ls');
+                  scan(window.sessionStorage, 'ss');
+                  out['_all_keys'] = allKeys.join('|');
                   AigwExtract.submit(JSON.stringify(out));
                 })();
             """.trimIndent()
