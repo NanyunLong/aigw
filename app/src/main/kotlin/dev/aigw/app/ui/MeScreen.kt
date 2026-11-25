@@ -498,12 +498,11 @@ fun UsageScreen(state: AppUiState, viewModel: AppViewModel, onBack: () -> Unit) 
                 .mapValues { (_, list) -> list.fold(UsageStats()) { a, b -> a + b } }
                 .entries.sortedByDescending { it.value.totalTokens }
         }
-        // 每个供应商下有多少个不同模型
+        // 每个供应商下有多少个不同模型：模型名前缀就是 providerId（如 codebuddy-cn/glm-5.3）
         val providerModelCount = remember(groupsInRange) {
-            groupsInRange.flatMap { g -> g.byModel.keys.map { model -> g.byProvider.keys.firstOrNull() to model } }
-                .filter { it.first != null }
-                .groupBy({ it.first!! }, { it.second })
-                .mapValues { (_, models) -> models.distinct().size }
+            groupsInRange.flatMap { it.byModel.keys }
+                .groupingBy { it.substringBefore('/') }
+                .eachCount()
         }
         val byModel = remember(groupsInRange, mergeModels) {
             val entries = groupsInRange.flatMap { it.byModel.entries }
@@ -515,12 +514,17 @@ fun UsageScreen(state: AppUiState, viewModel: AppViewModel, onBack: () -> Unit) 
             grouped.mapValues { (_, list) -> list.fold(UsageStats()) { a, b -> a + b } }
                 .entries.sortedByDescending { it.value.totalTokens }
         }
-        // 每个模型出现在多少个供应商下
-        val modelProviderCount = remember(groupsInRange) {
-            groupsInRange.flatMap { g -> g.byModel.keys.map { model -> model to g.byProvider.keys.firstOrNull() } }
-                .filter { it.second != null }
-                .groupBy({ it.first }, { it.second!! })
+        // 每个模型（合并后）出现在多少个供应商下：由原始模型名前缀数
+        val modelProviderCount = remember(groupsInRange, mergeModels) {
+            val pairs = groupsInRange.flatMap { g -> g.byModel.keys }
+                .map { ModelKey.merged(it.substringAfterLast('/')) to it.substringBefore('/') }
+            pairs.groupBy({ it.first }, { it.second })
                 .mapValues { (_, providers) -> providers.distinct().size }
+            // 不合并时按完整模型名数
+                .let { merged ->
+                    if (mergeModels) merged
+                    else pairs.groupBy({ it.second }, { it.first }).mapValues { (_, keys) -> keys.distinct().size }
+                }
         }
 
         // 切换胶囊 + 合并开关
