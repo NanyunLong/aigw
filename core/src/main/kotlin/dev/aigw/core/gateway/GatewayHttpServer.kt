@@ -32,6 +32,7 @@ import java.io.ByteArrayOutputStream
 import java.io.IOException
 import java.io.InputStream
 import java.io.OutputStream
+import java.io.PushbackInputStream
 import java.nio.charset.StandardCharsets
 import java.security.MessageDigest
 import java.util.concurrent.ScheduledExecutorService
@@ -921,6 +922,53 @@ class GatewayHttpServer(
                         gateHandle.release()
                         continue
                     }
+                    // 预读首帧：上游流内业务错误（Trae 4008 额度/1005 模型限制、CodeBuddy 6004 等）
+                    // 走的是「HTTP 200 + SSE error 帧」，openChat 阶段拿到 200 就返回了流，错误要到流里才见。
+                    // 若不在这里拦，错误帧会被透传给客户端，且流已在发、无法再换号——这就是
+                    // 「测试（非流式）能成功、会话（流式）报错」的根因。首帧就是 error 且没有任何
+                    // 内容时，当成失败换号/换供应商重试，而不是把错误甩给客户端。
+                    val preflight = preflightStream(stream)
+                    val firstByteError = preflight.firstByteError
+                    if (firstByteError != null) {
+                        val elapsed = System.currentTimeMillis() - attemptStart
+                        call.close()
+                        when (firstByteError) {
+                            ErrorKind.MODEL_LIMIT -> {
+                                val cooldownMs = failoverCfg.modelCooldown.cooldownMs
+                                engine.modelCooldownOf().markCooling(currentRoute.providerId, resolvedModel, cooldownMs)
+                                log("流内模型级不可用，冷却 $cooldownMs ms（${currentRoute.providerId}/$resolvedModel）：${preflight.firstByteMessage}")
+                                providerLastError = preflight.firstByteMessage
+                                lastHttpStatus = call.status
+                                failureKinds.add(ErrorKind.MODEL_LIMIT)
+                                finishActiveRequest()
+                                gateHandle.release()
+                                break
+                            }
+                            ErrorKind.QUOTA -> {
+                                cb.recordFailure()
+                                modelBreaker.recordFailure()
+                                engine.pool.coolDown(currentRoute.providerId, account.uid, failoverCfg.accountCooldownMs)
+                                pMetrics.record(false, elapsed, "quota_exhausted_stream")
+                                log("流内额度耗尽，冷却账号（${currentRoute.providerId}/${account.nickname}）：${preflight.firstByteMessage}")
+                                providerLastError = preflight.firstByteMessage
+                                failureKinds.add(ErrorKind.QUOTA)
+                                finishActiveRequest()
+                                gateHandle.release()
+                                continue
+                            }
+                            else -> {
+                                // 其它流内错误按可重试上游错误处理
+                                cb.recordFailure()
+                                modelBreaker.recordFailure()
+                                pMetrics.record(false, elapsed, "stream_first_error")
+                                providerLastError = preflight.firstByteMessage
+                                failureKinds.add(firstByteError)
+                                finishActiveRequest()
+                                gateHandle.release()
+                                continue
+                            }
+                        }
+                    }
                     // 流式透传：在途许可要覆盖整个读流转发阶段，所有权交给 onClosed（流结束后释放），
                     // 先清空 pendingGate 以免循环级 finally 在 return 时提前释放。
                     pendingGate = null
@@ -928,7 +976,7 @@ class GatewayHttpServer(
                     // 置空 activeRequestId 以免循环级 finally 提前结束它。
                     activeRequestId = null
                     return streamResponse(
-                        stream, call, currentRoute.providerId, transparentModel, account.uid, account.nickname, startedAt, body, call.status,
+                        preflight.stream, call, currentRoute.providerId, transparentModel, account.uid, account.nickname, startedAt, body, call.status,
                         meta = callMeta,
                         onFirstChunk = { engine.activeRequests.update(activeId, ActiveRequest.Phase.STREAMING) },
                         onFinished = {
@@ -1430,6 +1478,85 @@ class GatewayHttpServer(
         "ogg", "oga" -> "audio/ogg"
         "flac" -> "audio/flac"
         else -> "application/octet-stream"
+    }
+
+    /**
+     * 流式首帧预读结果：[stream] 是回放后的完整流（可继续透传）；
+     * [firstByteError] 非 null 表示首帧就是错误帧（应换号/换供应商重试），此时 [stream] 不可用。
+     */
+    private data class StreamPreflight(
+        val stream: InputStream,
+        val firstByteError: ErrorKind?,
+        val firstByteMessage: String,
+    )
+
+    /**
+     * 读上游 SSE 流的首帧，判断是否为「HTTP 200 + 流内业务错误」（如 Trae 4008 额度、
+     * 1005 模型限制）。是错误且没有任何内容时返回 [firstByteError]，让上层换号重试；
+     * 否则回放已读字节并返回完整流继续透传。
+     *
+     * 用 PushbackInputStream 而非 BufferedReader：BufferedReader 会预读底层字节到内部缓冲，
+     * 预读走的字节既不在回放里、也无法放回底层流，会丢数据。Pushback 只读走已回放的部分。
+     */
+    private fun preflightStream(stream: InputStream): StreamPreflight {
+        val pushback = PushbackInputStream(stream, MAX_STREAM_HEAD_BYTES)
+        val replay = ByteArrayOutputStream()
+        try {
+            while (true) {
+                val lineBytes = readLineBytes(pushback) ?: break
+                replay.write(lineBytes)
+                replay.write('\n'.code)
+                val line = String(lineBytes, StandardCharsets.UTF_8)
+                if (!line.startsWith("data:")) continue
+                val payload = line.removePrefix("data:").trim()
+                if (payload.isEmpty() || payload == "[DONE]") break
+                val obj = runCatching { com.google.gson.JsonParser.parseString(payload) }
+                    .getOrNull()?.takeIf { it.isJsonObject }?.asJsonObject ?: break
+                val error = obj.objOrNull("error")
+                val delta = obj.arrayOrNull("choices")?.firstOrNull()?.asObjectOrNull()?.objOrNull("delta")
+                val hasContent = delta?.stringOrNull("content").orEmpty().isNotEmpty() ||
+                    delta?.has("tool_calls") == true ||
+                    delta?.has("images") == true ||
+                    !delta?.stringOrNull("reasoning_content").isNullOrEmpty()
+                if (error == null || hasContent) break
+                val message = error.stringOrNull("message") ?: "上游流内错误"
+                val kind = resolveStreamErrorKind(error.stringOrNull("type").orEmpty(), error.longOrNull("code"))
+                // 首帧即错误：换号重试，这条流直接丢弃（不用回放）
+                return StreamPreflight(pushback, kind, message)
+            }
+            // 首帧正常：把读到的字节放回，返回可从头透传的流
+            pushback.unread(replay.toByteArray())
+            return StreamPreflight(pushback, null, "")
+        } catch (e: Exception) {
+            runCatching { pushback.unread(replay.toByteArray()) }
+            return StreamPreflight(pushback, null, "")
+        }
+    }
+
+    /** 逐字节读一行（到 \n 为止，去掉行尾 \r）；EOF 且没读到任何字节时返回 null。 */
+    private fun readLineBytes(input: InputStream): ByteArray? {
+        val out = ByteArrayOutputStream()
+        while (true) {
+            val b = input.read()
+            if (b == -1) return if (out.size() == 0) null else out.toByteArray()
+            if (b == '\n'.code) {
+                val arr = out.toByteArray()
+                return if (arr.isNotEmpty() && arr[arr.size - 1] == '\r'.code.toByte()) arr.copyOf(arr.size - 1) else arr
+            }
+            out.write(b)
+        }
+    }
+
+    /** 把 error 帧的 type/code 归到 [ErrorKind]；type 优先（Trae 显式给出），code 兜底。 */
+    private fun resolveStreamErrorKind(typeStr: String, code: Long?): ErrorKind {
+        val byType = runCatching { ErrorKind.valueOf(typeStr) }.getOrNull()
+        if (byType != null) return byType
+        return when (code) {
+            4008L -> ErrorKind.QUOTA
+            1005L -> ErrorKind.MODEL_LIMIT
+            6004L -> ErrorKind.MODEL_LIMIT
+            else -> ErrorKind.CLIENT
+        }
     }
 
     /**
@@ -2418,6 +2545,9 @@ class GatewayHttpServer(
         /** 调用记录里 prompt / 识别文本保留的上限，避免把存储写爆。 */
         private const val MAX_SUMMARY_PROMPT_CHARS = 2000
         private const val MAX_SUMMARY_TEXT_CHARS = 2000
+
+        /** 流式首帧预读的 pushback 上限：首帧 error 判断只需读开头几个 data 行，128KB 绰绰有余。 */
+        private const val MAX_STREAM_HEAD_BYTES = 128 * 1024
 
         /** `/authorize` 回调固定归 Trae（其它供应商的登录不经过网关端口）。 */
         const val TRAE_PROVIDER_ID = "trae"

@@ -50,6 +50,8 @@ class GlmProvider(
 
     override val loginUrl: String = "https://chatglm.cn"
     override val localStorageKeys: List<String> = listOf(REFRESH_TOKEN_KEY)
+    // 兜底：部分登录方式（扫码/第三方）把 refresh_token 放在 Cookie 里而不是 localStorage。
+    override val cookieNames: List<String> = listOf(REFRESH_TOKEN_KEY)
 
     private val tokenCache = java.util.concurrent.ConcurrentHashMap<String, AccessToken>()
 
@@ -159,8 +161,9 @@ class GlmProvider(
 
     override fun extractAccount(localStorage: Map<String, String>, cookies: Map<String, String>): ProviderAccount {
         val refreshToken = localStorage[REFRESH_TOKEN_KEY].orEmpty()
+            .ifEmpty { cookies[REFRESH_TOKEN_KEY].orEmpty() }
         if (refreshToken.isEmpty()) {
-            throw IllegalStateException("未在 localStorage 里找到 chatglm_refresh_token，请确认已登录")
+            throw IllegalStateException("未在 localStorage/Cookie 里找到 chatglm_refresh_token，请确认已登录")
         }
         // 校验：用 refresh_token 换一次 access_token，确认凭证有效
         val access = runCatching { acquireToken(Credential(refreshToken)) }.getOrElse {
