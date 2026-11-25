@@ -18,14 +18,6 @@ enum class AuthKind {
 
     /** 无需登录，凭证即 API Key（自定义供应商）。 */
     NONE,
-
-    /**
-     * 内置 WebView 登录：在应用内打开官网登录页，登录后由 App 读取
-     * localStorage / Cookie 提取凭证（GLM / Kimi / DeepSeek 等）。
-     * 与 [WEBVIEW_CALLBACK] 的区别：没有回调 URL，凭据落在浏览器存储里，
-     * 必须在进程内 WebView 里登录才能读到，系统浏览器读不到。
-     */
-    WEBVIEW_EXTRACT,
 }
 
 /** provider 支持的额外动作，UI 据此决定展示哪些按钮。 */

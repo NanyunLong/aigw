@@ -19,7 +19,6 @@ import dev.aigw.app.data.KeepAlive
 import dev.aigw.app.data.KeepAliveStatus
 import dev.aigw.app.gatewayEngine
 import dev.aigw.app.updateApkDir
-import dev.aigw.app.WebViewLoginActivity
 import dev.aigw.app.ui.theme.ThemeMode
 import dev.aigw.app.ui.theme.defaultAppColors
 import dev.aigw.app.ui.theme.formatHex
@@ -1265,24 +1264,6 @@ class AppViewModel(
     fun updateProviderOption(providerId: String, key: String, value: String) {
         val settings = providerSettings(providerId)
         updateProviderSettings(providerId, settings.copy(options = settings.options + (key to value)))
-    }
-
-    /**
-     * 内置 WebView 登录（GLM / Kimi / DeepSeek）：拉起 [WebViewLoginActivity]，
-     * 用户登录后点「完成登录」，由 App 提取 localStorage/Cookie 并落池。
-     */
-    fun beginWebViewExtract(providerId: String) {
-        val provider = engine.registry.get(providerId)
-        if (provider !is dev.aigw.core.provider.WebViewExtractSupport) {
-            notice("该供应商不支持内置浏览器登录")
-            return
-        }
-        runCatching {
-            val intent = Intent(app, WebViewLoginActivity::class.java)
-                .putExtra(WebViewLoginActivity.EXTRA_PROVIDER_ID, providerId)
-                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-            app.startActivity(intent)
-        }.onFailure { notice(it.message ?: "打开登录页失败") }
     }
 
     /**
