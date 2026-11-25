@@ -49,6 +49,11 @@ data class SecuritySettings(
     val promptRewriteDisabledRules: List<String> = emptyList(),
     /** 用户自定义替换规则。 */
     val promptRewriteRules: List<PromptRule> = emptyList(),
+    /**
+     * 账号防风控：开启后对上游请求加随机延迟、轮换 User-Agent、降低并发，
+     * 减少被上游风控标记为自动化脚本的特征。默认关闭（会引入额外延迟）。
+     */
+    val antiRiskEnabled: Boolean = false,
 ) {
     /** 实际生效的预设：未显式配置时全部内置预设默认开启。 */
     fun effectivePromptPresets(): Set<String> =
@@ -63,6 +68,7 @@ data class SecuritySettings(
         addProperty("jitterMillis", jitterMillis)
         addProperty("privacyRedactionEnabled", privacyRedactionEnabled)
         addProperty("promptRewriteEnabled", promptRewriteEnabled)
+        addProperty("antiRiskEnabled", antiRiskEnabled)
         val presetArr = JsonArray()
         for (p in promptRewritePresets) presetArr.add(p)
         add("promptRewritePresets", presetArr)
@@ -128,6 +134,7 @@ data class SecuritySettings(
                 promptRewritePresets = presets,
                 promptRewriteDisabledRules = disabledRules,
                 promptRewriteRules = rules,
+                antiRiskEnabled = obj.get("antiRiskEnabled")?.asBoolean ?: false,
             )
         }
     }

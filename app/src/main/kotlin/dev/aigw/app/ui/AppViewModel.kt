@@ -877,6 +877,20 @@ class AppViewModel(
         }
     }
 
+    /**
+     * 修复风控账号：清除禁用状态并尝试刷新凭证。
+     * 目前实现为：解除禁用 + 触发一次额度拉取（验证账号是否恢复）。
+     */
+    fun fixRiskAccount(providerId: String, uid: String) {
+        viewModelScope.launch {
+            withContext(Dispatchers.IO) {
+                engine.pool.setEnabled(providerId, uid, true, "手动解除风控")
+            }
+            loadCreditPacks(providerId, uid)
+            refresh()
+        }
+    }
+
     fun updateFailoverSettings(updated: dev.aigw.core.failover.ModelFailoverSettings) {
         viewModelScope.launch {
             withContext(Dispatchers.IO) { engine.updateFailoverSettings(updated) }

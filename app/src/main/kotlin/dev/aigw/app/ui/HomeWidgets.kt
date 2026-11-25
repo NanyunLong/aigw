@@ -851,7 +851,13 @@ internal fun HomeQuotaWidget(state: AppUiState, viewModel: AppViewModel) {
 
     SectionCard {
         SectionHeader("上游配额池")
-        groups.entries.sortedWith(compareBy({ it.key.providerId }, { it.key.region })).forEach { (key, accs) ->
+        // 有额度的排前面，无额度的排最后
+        val sortedGroups = groups.entries.sortedWith(
+            compareByDescending<Map.Entry<GroupKey, List<dev.aigw.core.pool.AccountStatus>>> { entry ->
+                entry.value.any { acc -> state.creditPacks["${acc.providerId}/${acc.uid}"].orEmpty().isNotEmpty() }
+            }.thenBy { it.key.providerId }.thenBy { it.key.region }
+        )
+        sortedGroups.forEach { (key, accs) ->
             val provider = state.providers.firstOrNull { it.id == key.providerId }
             val providerName = provider?.displayName ?: key.providerId
             val regionLabel = when (key.region) {

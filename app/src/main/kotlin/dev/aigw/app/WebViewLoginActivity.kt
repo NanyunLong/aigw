@@ -60,8 +60,8 @@ class WebViewLoginActivity : Activity() {
         CookieManager.getInstance().setAcceptThirdPartyCookies(wv, true)
         wv.webViewClient = object : WebViewClient() {
             override fun onPageFinished(view: WebView, url: String) {
-                // 页面加载完成后立即检测一次（登录成功通常会跳转回首页）
-                detectNow(sup)
+                // 页面加载完成后延迟检测：登录成功跳转后 localStorage 可能异步写入
+                handler.postDelayed({ detectNow(sup) }, 500)
             }
         }
         wv.addJavascriptInterface(ExtractBridge(sup), JS_BRIDGE)

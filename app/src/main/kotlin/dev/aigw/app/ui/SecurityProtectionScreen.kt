@@ -106,6 +106,17 @@ fun SecurityProtectionScreen(
             state = state,
             onOpenEdit = { showRateLimitDialog = true },
         )
+
+        // 组件 4：账号防风控与修复
+        AntiRiskComponent(
+            state = state,
+            onToggle = { enabled ->
+                viewModel.updateSecuritySettings(state.security.copy(antiRiskEnabled = enabled))
+            },
+            onFixRisk = { providerId, uid ->
+                viewModel.fixRiskAccount(providerId, uid)
+            },
+        )
     }
 
     if (showEvidenceSheet) {
@@ -893,4 +904,69 @@ private fun RateLimitEditDialog(
             TextButton(onClick = onDismiss) { Text("取消") }
         },
     )
+}
+
+// ==============================================================================
+// 独立防护组件 4：账号防风控与修复
+// ==============================================================================
+
+@Composable
+fun AntiRiskComponent(
+    state: AppUiState,
+    onToggle: (Boolean) -> Unit,
+    onFixRisk: (String, String) -> Unit,
+) {
+    val riskAccounts = state.accounts.filter { it.disabled }
+
+    SectionLabel("账号防风控")
+    SectionCard(enterIndex = 2) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween,
+        ) {
+            Column(Modifier.weight(1f)) {
+                Text("防风控模式", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    text = "开启后对上游请求加随机延迟、轮换 User-Agent、降低并发，减少被上游风控标记为自动化脚本的特征",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            Switch(
+                checked = state.security.antiRiskEnabled,
+                onCheckedChange = onToggle,
+            )
+        }
+    }
+
+    if (riskAccounts.isNotEmpty()) {
+        SectionLabel("被风控账号（${riskAccounts.size}）")
+        riskAccounts.forEach { acc ->
+            SectionCard(enterIndex = 3) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                ) {
+                    Column(Modifier.weight(1f)) {
+                        Text(
+                            acc.nickname.ifEmpty { acc.uid },
+                            style = MaterialTheme.typography.titleSmall,
+                            fontWeight = FontWeight.SemiBold,
+                        )
+                        Text(
+                            "${acc.providerId} · 被禁用",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.error,
+                        )
+                    }
+                    TextButton(onClick = { onFixRisk(acc.providerId, acc.uid) }) {
+                        Text("解除风控")
+                    }
+                }
+            }
+        }
+    }
 }

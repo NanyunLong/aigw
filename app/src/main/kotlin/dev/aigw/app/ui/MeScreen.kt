@@ -15,6 +15,10 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.material3.SegmentedButton
+import androidx.compose.material3.SegmentedButtonDefaults
+import androidx.compose.material3.SingleChoiceSegmentedButtonRow
+import dev.aigw.core.usage.ModelKey
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -472,45 +476,118 @@ fun UsageScreen(state: AppUiState, viewModel: AppViewModel, onBack: () -> Unit) 
             }
         }
 
-        // 服务商 / 模型排行
+        // 服务商 / 模型排行（Minis 风格：切换胶囊 + 折叠 + 模型合并开关）
         val groupsInRange = remember(state.groups, days) {
             if (range == UsageRange.ALL) state.groups else state.groups.takeLast(days.size)
         }
+        var groupBy by remember { mutableStateOf("provider") } // "provider" / "model"
+        var mergeModels by remember { mutableStateOf(true) }
+        var otherOpen by remember { mutableStateOf(false) }
+        var expandedKey by remember { mutableStateOf<String?>(null) }
+
         val byProvider = remember(groupsInRange) {
             groupsInRange.flatMap { it.byProvider.entries }
                 .groupBy({ it.key }, { it.value })
                 .mapValues { (_, list) -> list.fold(UsageStats()) { a, b -> a + b } }
                 .entries.sortedByDescending { it.value.totalTokens }
         }
-        val byModel = remember(groupsInRange) {
-            groupsInRange.flatMap { it.byModel.entries }
-                .groupBy({ it.key }, { it.value })
-                .mapValues { (_, list) -> list.fold(UsageStats()) { a, b -> a + b } }
+        // 每个供应商下有多少个不同模型
+        val providerModelCount = remember(groupsInRange) {
+            groupsInRange.flatMap { g -> g.byModel.keys.map { model -> g.byProvider.keys.firstOrNull() to model } }
+                .filter { it.first != null }
+                .groupBy({ it.first!! }, { it.second })
+                .mapValues { (_, models) -> models.distinct().size }
+        }
+        val byModel = remember(groupsInRange, mergeModels) {
+            val entries = groupsInRange.flatMap { it.byModel.entries }
+            val grouped = if (mergeModels) {
+                entries.groupBy({ ModelKey.merged(it.key) }, { it.value })
+            } else {
+                entries.groupBy({ it.key }, { it.value })
+            }
+            grouped.mapValues { (_, list) -> list.fold(UsageStats()) { a, b -> a + b } }
                 .entries.sortedByDescending { it.value.totalTokens }
         }
-        SectionCard(enterIndex = 5) {
-            SectionLabel("服务商")
-            if (byProvider.isEmpty()) {
-                Text(
-                    text = "该范围暂无调用",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            } else {
-                UsageRankList("", byProvider.map { it.key to it.value }, providerName)
+        // 每个模型出现在多少个供应商下
+        val modelProviderCount = remember(groupsInRange) {
+            groupsInRange.flatMap { g -> g.byModel.keys.map { model -> model to g.byProvider.keys.firstOrNull() } }
+                .filter { it.second != null }
+                .groupBy({ it.first }, { it.second!! })
+                .mapValues { (_, providers) -> providers.distinct().size }
+        }
+
+        // 切换胶囊 + 合并开关
+        Row(
+            Modifier.fillMaxWidth().padding(horizontal = 4.dp, vertical = 8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            SingleChoiceSegmentedButtonRow(Modifier.weight(1f)) {
+                listOf("provider" to "服务商", "model" to "模型").forEachIndexed { i, (key, label) ->
+                    SegmentedButton(
+                        selected = groupBy == key,
+                        onClick = { groupBy = key; expandedKey = null },
+                        shape = SegmentedButtonDefaults.itemShape(i, 2),
+                        icon = {},
+                    ) { Text(label, maxLines = 1) }
+                }
+            }
+            if (groupBy == "model") {
+                Spacer(Modifier.width(8.dp))
+                Text("合并同名", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Spacer(Modifier.width(4.dp))
+                Switch(checked = mergeModels, onCheckedChange = { mergeModels = it; expandedKey = null })
             }
         }
-        SectionCard(enterIndex = 6) {
-            SectionLabel("模型")
-            if (byModel.isEmpty()) {
-                Text(
-                    text = "该范围暂无调用",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            } else {
-                val id: (String) -> String = { s -> s }
-                UsageRankList("", byModel.map { it.key to it.value }, id)
+
+        val currentEntries = if (groupBy == "provider") byProvider else byModel
+        val totalTokens = currentEntries.sumOf { it.value.totalTokens }.coerceAtLeast(1L)
+        val topN = 3
+        val top = currentEntries.take(topN)
+        val rest = currentEntries.drop(topN)
+        val restTotal = rest.sumOf { it.value.totalTokens }
+
+        if (currentEntries.isEmpty()) {
+            Text(
+                text = "该范围暂无调用",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(16.dp),
+            )
+        } else {
+            Column(Modifier.fillMaxWidth()) {
+                top.forEach { entry ->
+                    MinisGroupRow(
+                        key = entry.key,
+                        stats = entry.value,
+                        total = totalTokens,
+                        title = if (groupBy == "provider") providerName(entry.key) else entry.key,
+                        subtitle = if (groupBy == "provider") "${providerModelCount[entry.key] ?: 0} 个模型" else "${modelProviderCount[entry.key] ?: 0} 个服务商",
+                        expanded = expandedKey == entry.key,
+                        onToggle = { expandedKey = if (expandedKey == entry.key) null else entry.key },
+                    )
+                }
+                if (rest.isNotEmpty()) {
+                    MinisOtherRow(
+                        count = rest.size,
+                        totalTokens = restTotal,
+                        grandTotal = totalTokens,
+                        open = otherOpen,
+                        onToggle = { otherOpen = !otherOpen },
+                    )
+                    if (otherOpen) {
+                        rest.forEach { entry ->
+                            MinisGroupRow(
+                                key = entry.key,
+                                stats = entry.value,
+                                total = totalTokens,
+                                title = if (groupBy == "provider") providerName(entry.key) else entry.key,
+                                subtitle = if (groupBy == "provider") "${providerModelCount[entry.key] ?: 0} 个模型" else "${modelProviderCount[entry.key] ?: 0} 个服务商",
+                                expanded = expandedKey == entry.key,
+                                onToggle = { expandedKey = if (expandedKey == entry.key) null else entry.key },
+                            )
+                        }
+                    }
+                }
             }
         }
 
@@ -775,4 +852,123 @@ private fun crashSummary(): String {
     val context = LocalContext.current
     val count = remember { CrashReporter.list(context).size }
     return if (count == 0) "无记录" else "$count 份"
+}
+
+/** Minis 风格分组行：名称 + 大号总 token + 进度条 + 占比 + 可展开细目。 */
+@Composable
+private fun MinisGroupRow(
+    key: String,
+    stats: UsageStats,
+    total: Long,
+    title: String,
+    subtitle: String,
+    expanded: Boolean,
+    onToggle: () -> Unit,
+) {
+    val share = stats.totalTokens.toFloat() / total
+    val gold = LocalAppColors.current.goldEnd
+    val onVariant = MaterialTheme.colorScheme.onSurfaceVariant
+    val track = MaterialTheme.colorScheme.outline.copy(alpha = 0.18f)
+
+    Column(Modifier.fillMaxWidth()) {
+        Row(
+            Modifier.fillMaxWidth().clickable(onClick = onToggle).padding(horizontal = 16.dp, vertical = 12.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(
+                title,
+                fontSize = 15.sp,
+                fontWeight = FontWeight.Medium,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.weight(1f, fill = false),
+            )
+            Spacer(Modifier.width(6.dp))
+            Text(subtitle, fontSize = 11.sp, color = onVariant, maxLines = 1)
+            Spacer(Modifier.weight(1f))
+            Text(formatTokens(stats.totalTokens), fontSize = 16.sp, fontWeight = FontWeight.SemiBold, color = gold)
+            Spacer(Modifier.width(4.dp))
+            Text("${(share * 100).toInt()}%", fontSize = 11.sp, color = onVariant)
+            Icon(
+                if (expanded) Icons.Default.ExpandMore else Icons.AutoMirrored.Filled.KeyboardArrowRight,
+                contentDescription = null,
+                tint = onVariant.copy(alpha = 0.6f),
+            )
+        }
+        Spacer(Modifier.height(4.dp))
+        Box(
+            Modifier.fillMaxWidth().padding(horizontal = 16.dp).height(4.dp)
+                .clip(RoundedCornerShape(2.dp)).background(track)
+        ) {
+            Box(
+                Modifier.fillMaxWidth(share.coerceIn(0f, 1f)).height(4.dp)
+                    .clip(RoundedCornerShape(2.dp)).background(gold)
+            )
+        }
+        if (expanded) {
+            Column(Modifier.padding(start = 32.dp, end = 16.dp, bottom = 12.dp)) {
+                MinisDetailRow("总(不含缓存读)", formatTokens(stats.promptTokens + stats.completionTokens))
+                MinisDetailRow("输入(含缓存)", formatTokens(stats.promptTokens + stats.cachedTokens))
+                MinisDetailRow("输出", formatTokens(stats.completionTokens))
+                MinisDetailRow("缓存读", formatTokens(stats.cachedTokens))
+                stats.cacheHitPercent?.let { MinisDetailRow("命中率", String.format("%.0f%%", it)) }
+                MinisDetailRow("请求", formatCount(stats.requests))
+                MinisDetailRow("成功/失败/中断", "${formatCount(stats.success)}/${formatCount(stats.failed)}/${formatCount(stats.aborted)}")
+                if (stats.costMicros > 0) MinisDetailRow("费用", formatMicroUsd(stats.costMicros))
+            }
+        }
+    }
+}
+
+@Composable
+private fun MinisOtherRow(
+    count: Int,
+    totalTokens: Long,
+    grandTotal: Long,
+    open: Boolean,
+    onToggle: () -> Unit,
+) {
+    val share = totalTokens.toFloat() / grandTotal
+    val onVariant = MaterialTheme.colorScheme.onSurfaceVariant
+    val gold = LocalAppColors.current.goldEnd
+    val track = MaterialTheme.colorScheme.outline.copy(alpha = 0.18f)
+
+    Column(Modifier.fillMaxWidth()) {
+        Row(
+            Modifier.fillMaxWidth().clickable(onClick = onToggle).padding(horizontal = 16.dp, vertical = 12.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text("其他 $count 项", fontSize = 15.sp, fontWeight = FontWeight.Medium)
+            Spacer(Modifier.weight(1f))
+            Text(formatTokens(totalTokens), fontSize = 16.sp, fontWeight = FontWeight.SemiBold, color = gold)
+            Spacer(Modifier.width(4.dp))
+            Text("${(share * 100).toInt()}%", fontSize = 11.sp, color = onVariant)
+            Icon(
+                if (open) Icons.Default.ExpandMore else Icons.AutoMirrored.Filled.KeyboardArrowRight,
+                contentDescription = null,
+                tint = onVariant.copy(alpha = 0.6f),
+            )
+        }
+        Spacer(Modifier.height(4.dp))
+        Box(
+            Modifier.fillMaxWidth().padding(horizontal = 16.dp).height(4.dp)
+                .clip(RoundedCornerShape(2.dp)).background(track)
+        ) {
+            Box(
+                Modifier.fillMaxWidth(share.coerceIn(0f, 1f)).height(4.dp)
+                    .clip(RoundedCornerShape(2.dp)).background(gold)
+            )
+        }
+    }
+}
+
+@Composable
+private fun MinisDetailRow(label: String, value: String) {
+    Row(
+        Modifier.fillMaxWidth().padding(vertical = 4.dp),
+        horizontalArrangement = Arrangement.SpaceBetween,
+    ) {
+        Text(label, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        Text(value, style = MaterialTheme.typography.bodySmall)
+    }
 }
