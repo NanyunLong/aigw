@@ -844,8 +844,12 @@ internal fun HomeQuotaWidget(state: AppUiState, viewModel: AppViewModel) {
 
     var refreshTick by remember { mutableStateOf(0) }
     LaunchedEffect(accounts.map { "${it.providerId}/${it.uid}" }, refreshTick) {
-        // 与额度中心一致：creditInfo（积分余额）+ creditPacks（额度包）都拉
-        accounts.forEach { viewModel.loadCreditPacks(it.providerId, it.uid) }
+        // 与额度中心「刷新」按钮一致：creditInfo（更新 credits/creditsKnown）+ creditPacks 两个都拉。
+        // 只拉 creditPacks 时积分余额兜底不生效（creditsKnown 要 refreshCredits 才会更新）。
+        accounts.forEach {
+            viewModel.refreshCredits(it.providerId, it.uid)
+            viewModel.loadCreditPacks(it.providerId, it.uid)
+        }
     }
 
     // 按供应商分组（不再按区域过滤：非 RegionAware 供应商 region 为空串会被归到 cn，造成丢失）

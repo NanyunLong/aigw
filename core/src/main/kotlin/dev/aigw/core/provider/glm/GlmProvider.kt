@@ -86,6 +86,18 @@ class GlmProvider(
         val token = runCatching { acquireToken(credential) }.getOrElse {
             return FailedChatCall(401, "换取访问令牌失败：${it.message}")
         }
+        // 上游轮换了 refresh_token：旧 token 已作废，必须回写池子持久化，
+        // 否则重启/下次请求还拿旧 token 换，必然 401。
+        if (token.rotatedRefreshToken.isNotEmpty() && token.rotatedRefreshToken != credential.refreshToken) {
+            hooks.onAccountUpdated(
+                ProviderAccount(
+                    id,
+                    jwtUserId(token.rotatedRefreshToken).ifEmpty { account.uid },
+                    account.nickname,
+                    Credential(token.rotatedRefreshToken).toJson(),
+                ),
+            )
+        }
         val sign = sign()
         val headers = LinkedHashMap<String, String>().apply {
             put("Authorization", "Bearer $token")
@@ -204,21 +216,29 @@ class GlmProvider(
         }
         val (status, text) = post("$base/user-api/user/refresh", "{}", headers)
         if (status !in 200..299) {
-            throw IllegalStateException("HTTP $status")
+            throw IllegalStateException("HTTP $status：${text.take(120)}")
         }
         val root = runCatching { JsonParser.parseString(text).asJsonObject }.getOrNull()
             ?: throw IllegalStateException("响应不是 JSON")
-        val code = root.get("code")?.takeIf { it.isJsonPrimitive }?.asLong ?: 1L
+        // 上游成功标志有两种口径：code=0 或 status=0（不同端点不一样），任一即成功
+        val code = root.get("code")?.takeIf { it.isJsonPrimitive }?.asLong
+            ?: root.get("status")?.takeIf { it.isJsonPrimitive }?.asLong ?: 1L
         if (code != 0L) {
-            throw IllegalStateException(root.get("message")?.takeIf { it.isJsonPrimitive }?.asString ?: "上游错误")
+            val msg = root.get("message")?.takeIf { it.isJsonPrimitive }?.asString
+                ?: root.get("msg")?.takeIf { it.isJsonPrimitive }?.asString
+                ?: "上游错误($code)"
+            throw IllegalStateException(msg)
         }
         val result = root.get("result")?.takeIf { it.isJsonObject }?.asJsonObject
+            ?: root.get("data")?.takeIf { it.isJsonObject }?.asJsonObject
             ?: throw IllegalStateException("响应缺少 result")
         val accessToken = result.get("access_token")?.takeIf { it.isJsonPrimitive }?.asString.orEmpty()
         if (accessToken.isEmpty()) throw IllegalStateException("响应缺少 access_token")
         val userId = result.get("user_id")?.takeIf { it.isJsonPrimitive }?.asString
             ?: result.get("id")?.takeIf { it.isJsonPrimitive }?.asString.orEmpty()
-        val access = AccessToken(accessToken, userId, nowMillis() + ACCESS_TOKEN_TTL_MS)
+        // 上游可能轮换 refresh_token（旧 token 随即作废）：带上新 token 让上层回写池子
+        val newRefresh = result.get("refresh_token")?.takeIf { it.isJsonPrimitive }?.asString.orEmpty()
+        val access = AccessToken(accessToken, userId, nowMillis() + ACCESS_TOKEN_TTL_MS, newRefresh)
         tokenCache[credential.refreshToken] = access
         return access
     }
@@ -297,15 +317,18 @@ class GlmProvider(
         return md5("$ts-$n-$SIGN_SECRET")
     }
 
+    /** 与官方 Web 一致（glm_adapter.ts generateSign）：取「全部数字位之和 - 倒数第二位」的个位做校验位。 */
     private fun timestamp(): String {
         val digits = nowMillis().toString()
-        val sum = digits.dropLast(2).sumOf { it - '0' }
-        return digits.dropLast(2) + (sum % 10) + digits.takeLast(1)
+        val t = digits.length
+        val sum = digits.map { it - '0' }.reduce { acc, d -> acc + d } - (digits[t - 2] - '0')
+        return digits.substring(0, t - 2) + (sum % 10) + digits.substring(t - 1)
     }
 
-    private fun nonce(): String = UUID.randomUUID().toString()
+    /** 32 位 hex（UUID 去连字符），与官方客户端一致。 */
+    private fun nonce(): String = UUID.randomUUID().toString().replace("-", "")
 
-    private fun uuid(): String = UUID.randomUUID().toString()
+    private fun uuid(): String = UUID.randomUUID().toString().replace("-", "")
 
     private fun md5(s: String): String {
         val digest = MessageDigest.getInstance("MD5").digest(s.toByteArray(Charsets.UTF_8))
@@ -325,7 +348,13 @@ class GlmProvider(
         }.toString()
     }
 
-    private data class AccessToken(val accessToken: String, val userId: String, val expiresAtMillis: Long)
+    private data class AccessToken(
+        val accessToken: String,
+        val userId: String,
+        val expiresAtMillis: Long,
+        /** 上游轮换出的新 refresh_token；空串表示未轮换。 */
+        val rotatedRefreshToken: String = "",
+    )
 
     companion object {
         const val ID = "glm"

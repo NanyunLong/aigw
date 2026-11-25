@@ -51,8 +51,14 @@ class WebViewLoginActivity : Activity() {
     @SuppressLint("SetJavaScriptEnabled")
     private fun buildLayout(sup: WebViewExtractSupport): ViewGroup {
         val wv = WebView(this)
+        // 无痕模式：清掉上个账号留下的 cookie/localStorage，否则打开就是已登录状态，
+        // 提取到的永远是旧账号，没法反复加多个账号（要换号就得先手动退出）。
+        CookieManager.getInstance().removeAllCookies(null)
+        CookieManager.getInstance().flush()
         wv.settings.javaScriptEnabled = true
         wv.settings.domStorageEnabled = true
+        // domStorage 的清法：先加载 about:blank 让 storage 就绪，再 clearFormData
+        android.webkit.WebStorage.getInstance().deleteAllData()
         wv.settings.databaseEnabled = true
         wv.settings.javaScriptCanOpenWindowsAutomatically = true
         wv.settings.userAgentString = MOBILE_UA
