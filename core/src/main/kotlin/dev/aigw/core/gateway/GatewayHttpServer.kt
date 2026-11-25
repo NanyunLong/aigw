@@ -366,6 +366,9 @@ class GatewayHttpServer(
         return root.toString()
     }
 
+    // 网关主链路是大分支表，拆开更难跟（见 detekt.yml 注释）；流式首帧预读让它略超阈值，
+    // 属功能增长而非失控，故局部抑制。
+    @Suppress("detekt:LongMethod", "detekt:CyclomaticComplexMethod")
     private fun chatCompletions(session: NanoHTTPD.IHTTPSession, inboundAnthropic: Boolean = false): NanoHTTPD.Response {
         val auth = checkAuth(session)
         if (!auth.ok) return unauthorized(session)
@@ -922,58 +925,27 @@ class GatewayHttpServer(
                         gateHandle.release()
                         continue
                     }
-                    // 预读首帧：上游流内业务错误（Trae 4008 额度/1005 模型限制、CodeBuddy 6004 等）
-                    // 走的是「HTTP 200 + SSE error 帧」，openChat 阶段拿到 200 就返回了流，错误要到流里才见。
-                    // 若不在这里拦，错误帧会被透传给客户端，且流已在发、无法再换号——这就是
-                    // 「测试（非流式）能成功、会话（流式）报错」的根因。首帧就是 error 且没有任何
-                    // 内容时，当成失败换号/换供应商重试，而不是把错误甩给客户端。
+                    // 预读首帧：HTTP 200 + SSE error 帧（Trae 4008/1005）要到流里才见，透传后无法换号，
+                    // 故首帧是错误且无内容时先换号/换供应商（测试非流式能成功、会话流式报错的根因）。
                     val preflight = preflightStream(stream)
                     val firstByteError = preflight.firstByteError
                     if (firstByteError != null) {
                         val elapsed = System.currentTimeMillis() - attemptStart
                         call.close()
-                        when (firstByteError) {
-                            ErrorKind.MODEL_LIMIT -> {
-                                val cooldownMs = failoverCfg.modelCooldown.cooldownMs
-                                engine.modelCooldownOf().markCooling(currentRoute.providerId, resolvedModel, cooldownMs)
-                                log("流内模型级不可用，冷却 $cooldownMs ms（${currentRoute.providerId}/$resolvedModel）：${preflight.firstByteMessage}")
-                                providerLastError = preflight.firstByteMessage
-                                lastHttpStatus = call.status
-                                failureKinds.add(ErrorKind.MODEL_LIMIT)
-                                finishActiveRequest()
-                                gateHandle.release()
-                                break
-                            }
-                            ErrorKind.QUOTA -> {
-                                cb.recordFailure()
-                                modelBreaker.recordFailure()
-                                engine.pool.coolDown(currentRoute.providerId, account.uid, failoverCfg.accountCooldownMs)
-                                pMetrics.record(false, elapsed, "quota_exhausted_stream")
-                                log("流内额度耗尽，冷却账号（${currentRoute.providerId}/${account.nickname}）：${preflight.firstByteMessage}")
-                                providerLastError = preflight.firstByteMessage
-                                failureKinds.add(ErrorKind.QUOTA)
-                                finishActiveRequest()
-                                gateHandle.release()
-                                continue
-                            }
-                            else -> {
-                                // 其它流内错误按可重试上游错误处理
-                                cb.recordFailure()
-                                modelBreaker.recordFailure()
-                                pMetrics.record(false, elapsed, "stream_first_error")
-                                providerLastError = preflight.firstByteMessage
-                                failureKinds.add(firstByteError)
-                                finishActiveRequest()
-                                gateHandle.release()
-                                continue
-                            }
+                        providerLastError = preflight.firstByteMessage
+                        lastHttpStatus = call.status
+                        failureKinds.add(firstByteError)
+                        val switchProvider = handleStreamFirstByteError(
+                            firstByteError, preflight.firstByteMessage, elapsed,
+                            currentRoute.providerId, resolvedModel, account,
+                        ) {
+                            finishActiveRequest()
+                            gateHandle.release()
                         }
+                        if (switchProvider) break else continue
                     }
-                    // 流式透传：在途许可要覆盖整个读流转发阶段，所有权交给 onClosed（流结束后释放），
-                    // 先清空 pendingGate 以免循环级 finally 在 return 时提前释放。
+                    // 流式透传：在途许可与打点所有权交给 onClosed/onFinished 收尾
                     pendingGate = null
-                    // 在途打点的所有权同样交给这条流：首字出站时转 STREAMING，流真正结束时收尾；
-                    // 置空 activeRequestId 以免循环级 finally 提前结束它。
                     activeRequestId = null
                     return streamResponse(
                         preflight.stream, call, currentRoute.providerId, transparentModel, account.uid, account.nickname, startedAt, body, call.status,
@@ -1556,6 +1528,47 @@ class GatewayHttpServer(
             1005L -> ErrorKind.MODEL_LIMIT
             6004L -> ErrorKind.MODEL_LIMIT
             else -> ErrorKind.CLIENT
+        }
+    }
+
+    /**
+     * 处理流式首帧错误（HTTP 200 + SSE error 帧）：按类型执行冷却/熔断/指标记录并收尾。
+     * [finish] 负责在途请求收尾与并发许可释放（finishActiveRequest + gateHandle.release）。
+     * 返回 true 表示换供应商（break），false 表示换号重试（continue）。
+     */
+    private fun handleStreamFirstByteError(
+        kind: ErrorKind,
+        message: String,
+        elapsed: Long,
+        providerId: String,
+        resolvedModel: String,
+        account: dev.aigw.core.provider.ProviderAccount,
+        finish: () -> Unit,
+    ): Boolean {
+        when (kind) {
+            ErrorKind.MODEL_LIMIT -> {
+                val cooldownMs = engine.failoverSettings().modelCooldown.cooldownMs
+                engine.modelCooldownOf().markCooling(providerId, resolvedModel, cooldownMs)
+                log("流内模型级不可用，冷却 $cooldownMs ms（$providerId/$resolvedModel）：$message")
+                finish()
+                return true
+            }
+            ErrorKind.QUOTA -> {
+                engine.circuitBreakerOf(providerId).recordFailure()
+                engine.modelBreakerOf(providerId, resolvedModel).recordFailure()
+                engine.pool.coolDown(providerId, account.uid, engine.failoverSettings().accountCooldownMs)
+                engine.metricsOf(providerId).record(false, elapsed, "quota_exhausted_stream")
+                log("流内额度耗尽，冷却账号（$providerId/${account.nickname}）：$message")
+                finish()
+                return false
+            }
+            else -> {
+                engine.circuitBreakerOf(providerId).recordFailure()
+                engine.modelBreakerOf(providerId, resolvedModel).recordFailure()
+                engine.metricsOf(providerId).record(false, elapsed, "stream_first_error")
+                finish()
+                return false
+            }
         }
     }
 
