@@ -2050,6 +2050,8 @@ class GatewayEngine(
                 val routes = ordered.mapNotNull { member ->
                     if (registry.get(member.providerId) == null) return@mapNotNull null
                     if (!providerSettings(member.providerId).enabled) return@mapNotNull null
+                    // 组成员的模型也必须在该供应商目录里，避免把请求发给不支持它的家
+                    if (!providerHasModel(member.providerId, member.model)) return@mapNotNull null
                     Route(member.providerId, member.model)
                 }
                 if (routes.isNotEmpty()) return routes
@@ -2070,6 +2072,9 @@ class GatewayEngine(
             // 先按 priority 降序，同优先级内按 weight 加权随机（见 weightedOrder）
             for (c in weightedOrder(configuredCandidates)) {
                 if (registry.get(c.providerId) != null && providerSettings(c.providerId).enabled) {
+                    // 候选模型必须在该供应商的模型目录里，否则注定被上游拒（如 Trae 1005 套餐权益拒绝）。
+                    // 拿不到目录（网络失败）时放行——宁可发出去撞一次，也不要因为目录拉不到就把路全堵死。
+                    if (!providerHasModel(c.providerId, c.upstreamModel)) continue
                     list.add(Route(c.providerId, c.upstreamModel))
                 }
             }
@@ -2105,6 +2110,38 @@ class GatewayEngine(
             .replace("_", "-")
             .replace(" ", "-")
             .trim()
+    }
+
+    /**
+     * 模型目录缓存（providerId → (目录拉取时间, 模型 id 集合)）：
+     * [resolveCandidateRoutes] 校验显式路由/路由组成员时用，避免每个请求都打一遍上游 listModels。
+     * TTL 5 分钟；目录拉不到时返回 true（放行），宁可发出去撞一次错也不要把路全堵死。
+     */
+    private val routeCatalogCache = HashMap<String, Pair<Long, Set<String>>>()
+    private val routeCatalogTtlMs = 5 * 60 * 1000L
+
+    private fun providerHasModel(providerId: String, upstreamModel: String): Boolean {
+        val provider = registry.get(providerId) ?: return false
+        val now = System.currentTimeMillis()
+        val cached = routeCatalogCache[providerId]
+        if (cached == null || now - cached.first > routeCatalogTtlMs) {
+            val catalog = runCatching { provider.listModels(pool.pick(providerId)) }.getOrNull()
+            if (catalog == null || catalog.models.isEmpty()) {
+                // 拉不到目录（无账号/网络失败）：不缓存失败结果，直接放行
+                return true
+            }
+            routeCatalogCache[providerId] = now to catalog.models.map { it.id }.toHashSet()
+            return catalog.models.any { matchesModel(it.id, upstreamModel) }
+        }
+        return cached.second.any { matchesModel(it, upstreamModel) }
+    }
+
+    /** 与 [findMatchingModel] 同款宽松匹配：忽略大小写/分隔符差异，并允许等价修饰符（-high/-preview 等）。 */
+    private fun matchesModel(catalogId: String, wanted: String): Boolean {
+        val normCatalog = normalizeModelKey(catalogId)
+        val normWanted = normalizeModelKey(wanted)
+        return normCatalog == normWanted || catalogId.equals(wanted, ignoreCase = true) ||
+            isEquivalentModel(normCatalog, normWanted)
     }
 
     private fun findMatchingModel(provider: Provider, baseModel: String, normBase: String): String? {

@@ -39,6 +39,7 @@ import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.material3.TextButton
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -838,7 +839,10 @@ internal fun HomeQuotaWidget(state: AppUiState, viewModel: AppViewModel) {
         return
     }
 
-    LaunchedEffect(accounts.map { "${it.providerId}/${it.uid}" }) {
+    // 重拉触发器：进首页拉一次、账号集合变化重拉、点刷新按钮重拉；
+    // 拉取失败（返回空列表）不会写进 state，所以再点一次刷新即可重试
+    var refreshTick by remember { mutableStateOf(0) }
+    LaunchedEffect(accounts.map { "${it.providerId}/${it.uid}" }, refreshTick) {
         accounts.forEach { viewModel.loadCreditPacks(it.providerId, it.uid) }
     }
 
@@ -851,6 +855,9 @@ internal fun HomeQuotaWidget(state: AppUiState, viewModel: AppViewModel) {
 
     SectionCard {
         SectionHeader("上游配额池")
+        TextButton(onClick = { refreshTick++ }) {
+            Text("刷新额度", style = MaterialTheme.typography.labelMedium)
+        }
         // 有额度的排前面，无额度的排最后
         val sortedGroups = groups.entries.sortedWith(
             compareByDescending<Map.Entry<GroupKey, List<dev.aigw.core.pool.AccountStatus>>> { entry ->

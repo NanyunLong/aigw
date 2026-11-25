@@ -116,8 +116,16 @@ class WebViewLoginActivity : Activity() {
         storage: Map<String, String>,
         cookies: Map<String, String>,
     ) {
-        // 目标字段都为空 = 还没登录，静默等待，不打扰
-        val hasStorage = sup.localStorageKeys.any { storage[it].orEmpty().isNotEmpty() }
+        // 目标字段都为空 = 还没登录，静默等待，不打扰。
+        // 兜底扫描的键带 ls:/ss: 前缀，按目标键名模糊匹配（不区分大小写、含子串）
+        fun lookupValue(targetKey: String): String {
+            val exact = storage[targetKey]
+            if (!exact.isNullOrEmpty()) return exact
+            val lower = targetKey.lowercase()
+            return storage.entries.firstOrNull { it.key.lowercase().contains(lower) && it.value.isNotEmpty() }?.value.orEmpty()
+        }
+        val resolvedStorage = sup.localStorageKeys.associateWith { lookupValue(it) }
+        val hasStorage = resolvedStorage.values.any { it.isNotEmpty() }
         val hasCookie = sup.cookieNames.any { cookies[it].orEmpty().isNotEmpty() }
         if (!hasStorage && !hasCookie) {
             scheduleNextDetect(sup)
@@ -131,7 +139,7 @@ class WebViewLoginActivity : Activity() {
             return
         }
         val outcome: LoginOutcome = runCatching {
-            engine.completeWebViewExtract(providerId, storage, cookies)
+            engine.completeWebViewExtract(providerId, resolvedStorage, cookies)
         }.getOrElse {
             LoginOutcome(LoginState.FAILED, error = it.message ?: "登录失败")
         }
@@ -140,7 +148,7 @@ class WebViewLoginActivity : Activity() {
             toast("登录成功：${outcome.nickname.ifEmpty { outcome.uid }}")
             finish()
         } else {
-            // 提取失败（字段在但校验不过）：提示一次，继续等待用户重新登录
+            // 提取失败（字段在但校验不过）：提示具体原因，继续等待用户重新登录
             toast("登录失败：${outcome.error}")
             scheduleNextDetect(sup)
         }
@@ -149,7 +157,8 @@ class WebViewLoginActivity : Activity() {
     private fun scheduleNextDetect(sup: WebViewExtractSupport) {
         if (finished) return
         handler.removeCallbacksAndMessages(null)
-        handler.postDelayed({ detectNow(sup) }, POLL_INTERVAL_MS)
+        // 校验失败后降频：频繁重试会反复打上游 token 接口，也弹一堆 toast
+        handler.postDelayed({ detectNow(sup) }, SLOW_POLL_INTERVAL_MS)
     }
 
     private fun readCookies(names: List<String>): Map<String, String> {
@@ -195,6 +204,8 @@ class WebViewLoginActivity : Activity() {
         const val EXTRA_PROVIDER_ID = "provider_id"
         private const val JS_BRIDGE = "AigwExtract"
         private const val POLL_INTERVAL_MS = 1_500L
+        /** 提取校验失败后的慢轮询间隔：避免反复打上游 token 接口。 */
+        private const val SLOW_POLL_INTERVAL_MS = 10_000L
         private const val MOBILE_UA =
             "Mozilla/5.0 (Linux; Android 15; Mobile) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Mobile Safari/537.36"
 
@@ -210,6 +221,29 @@ class WebViewLoginActivity : Activity() {
                     var v = null;
                     try { v = window.localStorage.getItem(keys[i]); } catch(e){}
                     if (v !== null) out[keys[i]] = v;
+                  }
+                  // 兜底：目标键没取到时，扫 localStorage+sessionStorage 的全部键，
+                  // 按目标键名做模糊匹配（chatglm_refresh_token 之类可能带前缀/后缀）
+                  var found = false;
+                  for (var k in out) if (out[k]) found = true;
+                  if (!found) {
+                    var wanted = keys.map(function(k){return k.toLowerCase();});
+                    var scan = function(store, tag) {
+                      try {
+                        for (var i=0;i<store.length;i++){
+                          var sk = store.key(i);
+                          var lsk = sk.toLowerCase();
+                          for (var j=0;j<wanted.length;j++){
+                            if (lsk.indexOf(wanted[j]) >= 0) {
+                              var sv = store.getItem(sk);
+                              if (sv) { out[tag + ':' + sk] = sv; }
+                            }
+                          }
+                        }
+                      } catch(e){}
+                    };
+                    scan(window.localStorage, 'ls');
+                    scan(window.sessionStorage, 'ss');
                   }
                   AigwExtract.submit(JSON.stringify(out));
                 })();

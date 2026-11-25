@@ -20,6 +20,7 @@ import dev.aigw.core.provider.ProviderCapability
 import dev.aigw.core.provider.ProviderHooks
 import dev.aigw.core.provider.ProviderModel
 import dev.aigw.core.provider.ProviderModelCatalogView
+import dev.aigw.core.provider.QuotaPack
 import dev.aigw.core.provider.PointsBill
 import dev.aigw.core.provider.PointsBillListView
 import dev.aigw.core.provider.SSE_DONE
@@ -269,6 +270,29 @@ class RaccoonProvider(
             CreditInfo(points, known = true, detail = "可用积分 $points")
         } catch (e: Exception) {
             CreditInfo(0, known = false, detail = e.message ?: "查询积分失败")
+        }
+    }
+
+    /**
+     * 额度包：可用积分 + 今日已到账积分（每日发放）。
+     * 与 [creditInfo] 打同一个余额端点，另拉一次今日流水算「今日已领」。
+     */
+    override fun creditPacks(account: ProviderAccount): List<QuotaPack> {
+        val credential = parse(account) ?: throw IllegalStateException("账号凭证无法解析，请重新登录")
+        return try {
+            val (status, text) = getJson("$host$PATH_BALANCE", jsonHeaders(credential))
+            if (status !in 200..299) return emptyList()
+            val data = envelopeData(text) ?: return emptyList()
+            val points = BALANCE_POINT_KEYS.firstNotNullOfOrNull { data.longOrNull(it) } ?: return emptyList()
+            val todayGranted = todayGrantedPoints(credential)
+            buildList {
+                add(QuotaPack(name = "可用积分", group = "个人", remain = points))
+                if (todayGranted > 0) {
+                    add(QuotaPack(name = "今日已领", group = "每日", remain = todayGranted))
+                }
+            }
+        } catch (e: Exception) {
+            emptyList()
         }
     }
 
