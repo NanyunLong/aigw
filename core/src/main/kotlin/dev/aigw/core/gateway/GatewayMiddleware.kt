@@ -157,6 +157,105 @@ class ThinkTagsStripMiddleware : GatewayMiddleware {
 }
 
 /**
+ * 空 content 兜底：把 `content: ""` 或 `content: null` 填成单空格，
+ * 把多模态数组里所有 part 都不是 text 的 content 转成 "[image]"。
+ *
+ * 背景：某些严格的 OpenAI 兼容上游（如 codebuddy）会对 `content: ""`
+ * 直接 400 拒绝（"a message has empty content"）。客户端把图片消息
+ * 序列化成纯文本时常常留下空 content，宽容的上游会忽略，严格的上游
+ * 会拒绝。这个中间件统一兜底，让请求能穿过严格校验。
+ *
+ * 默认开启，无设置项——它是兜底逻辑，关闭它没有收益。
+ */
+class EmptyContentSanitizeMiddleware : GatewayMiddleware {
+    override val id: String get() = ID
+
+    override fun onRequest(context: MiddlewareContext, body: JsonObject): JsonObject {
+        val messages = body.arrayOrNull("messages") ?: return body
+        var changed = false
+        val copy = JsonArray()
+        for (element in messages) {
+            val message = element.takeIf { it.isJsonObject }?.asJsonObject
+            if (message == null) {
+                copy.add(element)
+                continue
+            }
+            val contentNode = message.get("content")
+            when {
+                // 字符串形态：空串 / 全空白 → 单空格
+                contentNode != null && contentNode.isJsonPrimitive -> {
+                    val raw = runCatching { contentNode.asString }.getOrNull()
+                    if (raw != null && raw.isBlank()) {
+                        changed = true
+                        copy.add(JsonObject().apply {
+                            message.entrySet().forEach { (key, value) -> add(key, value) }
+                            addProperty("content", " ")
+                        })
+                    } else {
+                        copy.add(message)
+                    }
+                }
+                // null 形态 → 单空格
+                contentNode == null || contentNode.isJsonNull -> {
+                    changed = true
+                    copy.add(JsonObject().apply {
+                        message.entrySet().forEach { (key, value) -> add(key, value) }
+                        addProperty("content", " ")
+                    })
+                }
+                // 多模态数组形态：所有 part 都不是 text → 加一条 "[image]" text part
+                contentNode.isJsonArray -> {
+                    val arr = contentNode.asJsonArray
+                    val hasText = arr.any { part ->
+                        part.isJsonObject && part.asJsonObject.stringOrNull("type") == "text"
+                    }
+                    if (hasText || arr.size() == 0) {
+                        // 有文本部分说明已经有可读内容；空数组也无伤大雅，跳过
+                        if (arr.size() == 0 && !hasText) {
+                            changed = true
+                            copy.add(JsonObject().apply {
+                                message.entrySet().forEach { (key, value) -> add(key, value) }
+                                add("content", JsonArray().apply {
+                                    add(JsonObject().apply {
+                                        addProperty("type", "text")
+                                        addProperty("text", " ")
+                                    })
+                                })
+                            })
+                        } else {
+                            copy.add(message)
+                        }
+                    } else {
+                        changed = true
+                        val newArr = JsonArray()
+                        // 把 text part 放最前，让严格校验先看到非空 text
+                        newArr.add(JsonObject().apply {
+                            addProperty("type", "text")
+                            addProperty("text", "[image]")
+                        })
+                        arr.forEach { newArr.add(it) }
+                        copy.add(JsonObject().apply {
+                            message.entrySet().forEach { (key, value) -> add(key, value) }
+                            add("content", newArr)
+                        })
+                    }
+                }
+                else -> copy.add(message)
+            }
+        }
+        if (!changed) return body
+        return JsonObject().apply {
+            body.entrySet().forEach { (key, value) -> add(key, value) }
+            add("messages", copy)
+        }
+    }
+
+    companion object {
+        const val ID = "empty-content-sanitize"
+    }
+}
+
+/**
  * 中间件链：按注册顺序依次执行。
  *
  * 铁律：**单个中间件抛异常就跳过它继续下一个**。钩子是可选增强，
@@ -199,7 +298,10 @@ class MiddlewareChain(private val middlewares: List<GatewayMiddleware> = emptyLi
         const val SETTINGS_KEY = "settings/middleware.json"
 
         fun build(settings: MiddlewareSettings): MiddlewareChain {
-            val list = ArrayList<GatewayMiddleware>(3)
+            val list = ArrayList<GatewayMiddleware>(4)
+            // 空 content 兜底永远在链尾：先做别名/system/思考标签等语义改写，
+            // 最后统一清洗空 content，保证前面的中间件引入的空 content 也能被兜底。
+            list.add(EmptyContentSanitizeMiddleware())
             if (settings.aliases.isNotEmpty()) list.add(ModelAliasMiddleware(settings.aliases))
             if (settings.systemPromptAppend.isNotBlank()) list.add(SystemPromptAppendMiddleware(settings.systemPromptAppend))
             if (settings.stripThinkTags) list.add(ThinkTagsStripMiddleware())

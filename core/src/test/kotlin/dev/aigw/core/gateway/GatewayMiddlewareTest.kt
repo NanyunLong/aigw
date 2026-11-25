@@ -186,4 +186,66 @@ class GatewayMiddlewareTest {
         val messages: JsonArray = result.arrayOrNull("messages")!!
         assertEquals("BASE\n\nEXTRA", messages[0].asJsonObject.stringOrNull("content"))
     }
+
+    // ---------------------------------------------------------------- 空 content 兜底
+
+    @Test
+    fun `空字符串 content 被填成单空格`() {
+        val mw = EmptyContentSanitizeMiddleware()
+        val original = json("""{"messages":[{"role":"user","content":""},{"role":"assistant","content":"好"}]}""")
+
+        val result = mw.onRequest(context(), original)
+
+        val messages = result.arrayOrNull("messages")!!
+        assertEquals(" ", messages[0].asJsonObject.stringOrNull("content"))
+        assertEquals("好", messages[1].asJsonObject.stringOrNull("content"))
+        assertEquals("empty-content-sanitize", mw.id)
+    }
+
+    @Test
+    fun `null content 被填成单空格`() {
+        val mw = EmptyContentSanitizeMiddleware()
+        val original = json("""{"messages":[{"role":"user","content":null}]}""")
+
+        val result = mw.onRequest(context(), original)
+
+        assertEquals(" ", result.arrayOrNull("messages")!![0].asJsonObject.stringOrNull("content"))
+    }
+
+    @Test
+    fun `纯图片多模态 content 注入 image 占位 text`() {
+        val mw = EmptyContentSanitizeMiddleware()
+        val original = json(
+            """{"messages":[{"role":"user","content":[{"type":"image_url","image_url":{"url":"data:image/png;base64,AAA"}}]}]}""",
+        )
+
+        val result = mw.onRequest(context(), original)
+
+        val content = result.arrayOrNull("messages")!![0].asJsonObject.get("content").asJsonArray
+        assertEquals("text", content[0].asJsonObject.stringOrNull("type"))
+        assertEquals("[image]", content[0].asJsonObject.stringOrNull("text"))
+        assertEquals("image_url", content[1].asJsonObject.stringOrNull("type"))
+    }
+
+    @Test
+    fun `含文本的多模态 content 原样保留`() {
+        val mw = EmptyContentSanitizeMiddleware()
+        val original = json(
+            """{"messages":[{"role":"user","content":[{"type":"text","text":"看图"},{"type":"image_url","image_url":{"url":"x"}}]}]}""",
+        )
+
+        val result = mw.onRequest(context(), original)
+
+        val content = result.arrayOrNull("messages")!![0].asJsonObject.get("content").asJsonArray
+        assertEquals(2, content.size(), "有 text 时不得注入占位")
+        assertEquals("看图", content[0].asJsonObject.stringOrNull("text"))
+    }
+
+    @Test
+    fun `无空 content 时原样返回入参`() {
+        val mw = EmptyContentSanitizeMiddleware()
+        val original = json("""{"messages":[{"role":"user","content":"正常"}]}""")
+
+        assertSame(original, mw.onRequest(context(), original))
+    }
 }
