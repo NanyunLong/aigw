@@ -98,7 +98,7 @@ class GlmProvider(
                 ),
             )
         }
-        val sign = sign()
+        val (chatTs, chatNonce, chatSign) = signTriple()
         val headers = LinkedHashMap<String, String>().apply {
             put("Authorization", "Bearer $token")
             put("Content-Type", "application/json")
@@ -111,9 +111,9 @@ class GlmProvider(
             put("X-Lang", "zh")
             put("X-Device-Id", uuid())
             put("X-Request-Id", uuid())
-            put("X-Sign", sign)
-            put("X-Timestamp", timestamp())
-            put("X-Nonce", nonce())
+            put("X-Sign", chatSign)
+            put("X-Timestamp", chatTs)
+            put("X-Nonce", chatNonce)
             put("User-Agent", USER_AGENT)
         }
 
@@ -177,9 +177,12 @@ class GlmProvider(
         if (refreshToken.isEmpty()) {
             throw IllegalStateException("未在 localStorage/Cookie 里找到 chatglm_refresh_token，请确认已登录")
         }
-        // 只从 token 提取 uid（JWT payload 的 sub/user_id），不做在线校验——
-        // 在线校验会多打一次上游，网络抖动或上游接口变动就整段登录失败。
-        val uid = jwtUserId(refreshToken).ifEmpty { refreshToken.take(16) }
+        // 轻量校验：换一次 access_token。没校验过的话废 token 也会被收进池子，
+        // 表现为「点登录立刻成功」但模型全 401——必须拦在入口。
+        val access = runCatching { acquireToken(Credential(refreshToken)) }.getOrElse {
+            throw IllegalStateException("凭证无效（${it.message}），请在页面里退出后重新登录")
+        }
+        val uid = access.userId.ifEmpty { jwtUserId(refreshToken) }.ifEmpty { refreshToken.take(16) }
         return ProviderAccount(id, uid, "智谱账号", Credential(refreshToken).toJson())
     }
 
@@ -200,6 +203,9 @@ class GlmProvider(
         val cached = tokenCache[credential.refreshToken]
         if (cached != null && cached.expiresAtMillis > nowMillis()) return cached
 
+        // 签名三元组必须一次生成、三头共用：分开各调一次会让 X-Timestamp/X-Nonce 与
+        // 参与 X-Sign 计算的值不一致（每次取的时间不同），签名恒错 → 上游 40001。
+        val (ts, nonce, sign) = signTriple()
         val headers = LinkedHashMap<String, String>().apply {
             put("Authorization", "Bearer ${credential.refreshToken}")
             put("Content-Type", "application/json")
@@ -209,9 +215,9 @@ class GlmProvider(
             put("X-App-Version", "0.0.1")
             put("X-Device-Id", uuid())
             put("X-Request-Id", uuid())
-            put("X-Sign", sign())
-            put("X-Timestamp", timestamp())
-            put("X-Nonce", nonce())
+            put("X-Sign", sign)
+            put("X-Timestamp", ts)
+            put("X-Nonce", nonce)
             put("User-Agent", USER_AGENT)
         }
         val (status, text) = post("$base/user-api/user/refresh", "{}", headers)
@@ -311,10 +317,11 @@ class GlmProvider(
         }
     }
 
-    private fun sign(): String {
+    /** 一次生成签名三元组（时间戳/nonce/签名共用同一组值），三头必须用同一个三元组。 */
+    private fun signTriple(): Triple<String, String, String> {
         val ts = timestamp()
         val n = nonce()
-        return md5("$ts-$n-$SIGN_SECRET")
+        return Triple(ts, n, md5("$ts-$n-$SIGN_SECRET"))
     }
 
     /** 与官方 Web 一致（glm_adapter.ts generateSign）：取「全部数字位之和 - 倒数第二位」的个位做校验位。 */
