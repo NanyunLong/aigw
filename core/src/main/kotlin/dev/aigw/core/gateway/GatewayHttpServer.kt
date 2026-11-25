@@ -371,6 +371,10 @@ class GatewayHttpServer(
         val clientKey = auth.clientKey
 
         val (rawBody, readResult) = readBody(session)
+        // DEBUG: dump 原始 body 到 logcat，定位空 content 形态
+        runCatching {
+            System.err.println("[AIGW-BODY] len=" + rawBody.length + " head=" + rawBody.take(1500))
+        }
         if (readResult == BodyReadResult.OVER_LIMIT) {
             return errorResponse(413, "payload_too_large", "请求体超过网关 ${MAX_BODY_BYTES / (1024 * 1024)}MB 上限")
         }
