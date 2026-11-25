@@ -218,7 +218,7 @@ fun MeScreen(state: AppUiState, viewModel: AppViewModel, open: (SubPage) -> Unit
             )
             Text(
                 text = "把多个上游统一成一个 OpenAI 兼容端点，供任意客户端调用。" +
-                    "内置 Trae / Loomy / WorkBuddy(CodeBuddy) / Antigravity / ChatGPT / 小浣熊，" +
+                    "内置 Trae / Loomy / WorkBuddy(CodeBuddy) / Antigravity / ChatGPT / 小浣熊 / 灵码，" +
                     "另收录 ${ProviderPresets.all.size} 家常⻅商家（DeepSeek、Kimi、智谱、Gemini、OpenRouter 等）" +
                     "与任意自定义 OpenAI 兼容接口，填 Key 即可反代。",
                 style = MaterialTheme.typography.bodySmall,

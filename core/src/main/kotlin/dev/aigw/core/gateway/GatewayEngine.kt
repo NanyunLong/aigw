@@ -33,6 +33,7 @@ import dev.aigw.core.provider.antigravity.AntigravityProvider
 import dev.aigw.core.provider.custom.CustomProvider
 import dev.aigw.core.provider.loomy.LoomyProvider
 import dev.aigw.core.provider.loomy.LoomyWechatClient
+import dev.aigw.core.provider.lingma.LingmaProvider
 import dev.aigw.core.provider.raccoon.RaccoonProvider
 import dev.aigw.core.provider.trae.TraeProvider
 import dev.aigw.core.store.KeyValueStore
@@ -1332,11 +1333,12 @@ class GatewayEngine(
         // 否则会在 A 站点创建 state、却去 B 站点轮询
         val loginRegion = region.ifEmpty { providerSettings(providerId).option("region", "") }
         return when {
-            provider is WebLoginSupport && (providerId == TraeProvider.ID || providerId == RaccoonProvider.ID) -> {
-                val (port, path) = if (providerId == RaccoonProvider.ID) {
-                    RACCOON_CALLBACK_PORT to RACCOON_CALLBACK_PATH
-                } else {
-                    TRAE_CALLBACK_PORT to TRAE_CALLBACK_PATH
+            provider is WebLoginSupport &&
+                (providerId == TraeProvider.ID || providerId == RaccoonProvider.ID || providerId == LingmaProvider.ID) -> {
+                val (port, path) = when (providerId) {
+                    RaccoonProvider.ID -> RACCOON_CALLBACK_PORT to RACCOON_CALLBACK_PATH
+                    LingmaProvider.ID -> LINGMA_CALLBACK_PORT to LINGMA_CALLBACK_PATH
+                    else -> TRAE_CALLBACK_PORT to TRAE_CALLBACK_PATH
                 }
                 val callbackUrl = "http://127.0.0.1:$port$path"
                 val ticket = provider.beginWebLogin(callbackUrl, loginRegion)
@@ -2392,6 +2394,10 @@ class GatewayEngine(
         /** 小浣熊（商汤）登录回调用的本地端口。 */
         const val RACCOON_CALLBACK_PORT = 51122
         const val RACCOON_CALLBACK_PATH = "/callback"
+
+        /** 灵码登录回调：V2 路径是 /auth/callback（与 lingma2api 一致）。 */
+        const val LINGMA_CALLBACK_PORT = 51123
+        const val LINGMA_CALLBACK_PATH = "/auth/callback"
 
         /** 登录回调监听的存活上限。 */
         const val CALLBACK_TIMEOUT_MS = 5L * 60 * 1000
