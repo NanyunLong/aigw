@@ -545,7 +545,11 @@ class GatewayHttpServer(
                 break
             }
 
-            val prepared = withModel(body, resolvedModel)
+            // 出网内容必须基于中间件改写后的 rewritten，而不是原始 body。
+            // 否则「请求改写」链（别名 / system 追加 / 思考标签清理 / 空 content 兜底）
+            // 只对路由判定生效，真正发给上游的 body 仍是原始请求——空 content 兜底
+            // 这类必须作用于出网内容的改写会全部失效（上游仍收到 content:""，报 400）。
+            val prepared = withModel(rewritten, resolvedModel)
             val secSettings = engine.securitySettings()
             // 反审核脱敏：仅改写 system 消息内的敏感词（注入零宽空格），完全不触碰 user 输入
             val sanitized = engine.sanitizer.sanitizeOpenAiBody(prepared, resolvedModel, secSettings.sanitizeEnabled)
