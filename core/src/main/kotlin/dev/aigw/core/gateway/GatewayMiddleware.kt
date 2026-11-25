@@ -255,14 +255,20 @@ class EmptyContentSanitizeMiddleware : GatewayMiddleware {
                         }
                     } else {
                         // 没有任何真实文本（全是空 text / 纯 image_url 等非文本 part）：
-                        // 在最前注入 "[image]" text part，让严格校验先看到非空 text
+                        // 最前注入 "[image]" text part，并丢弃所有空白 text part（否则残留的
+                        // 空 text part 仍可能被严格上游拒绝）
                         changed = true
                         val newArr = JsonArray()
                         newArr.add(JsonObject().apply {
                             addProperty("type", "text")
                             addProperty("text", "[image]")
                         })
-                        arr.forEach { newArr.add(it) }
+                        arr.forEach { part ->
+                            val isBlankText = part.isJsonObject &&
+                                part.asJsonObject.stringOrNull("type") == "text" &&
+                                (part.asJsonObject.stringOrNull("text").orEmpty()).isBlank()
+                            if (!isBlankText) newArr.add(part)
+                        }
                         copy.add(JsonObject().apply {
                             message.entrySet().forEach { (key, value) -> add(key, value) }
                             add("content", newArr)

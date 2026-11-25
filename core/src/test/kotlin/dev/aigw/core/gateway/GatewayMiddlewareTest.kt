@@ -250,8 +250,10 @@ class GatewayMiddlewareTest {
 
         val result = mw.onRequest(context(), original)
 
+        // 无真实文本 → 最前注入 [image]，空 text part 被丢弃
         val content = result.arrayOrNull("messages")!![0].asJsonObject.get("content").asJsonArray
-        assertEquals("[image]", content[0].asJsonObject.stringOrNull("text"), "空 text part 必须被填成占位")
+        assertEquals(2, content.size())
+        assertEquals("[image]", content[0].asJsonObject.stringOrNull("text"), "最前必须注入占位")
         assertEquals("image_url", content[1].asJsonObject.stringOrNull("type"))
     }
 
