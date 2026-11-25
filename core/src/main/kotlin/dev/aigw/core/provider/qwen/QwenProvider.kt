@@ -401,7 +401,7 @@ class QwenProvider internal constructor(
 
     private fun withTracking(url: String): String {
         val sep = if ('?' in url) "&" else "?"
-        return "$url$sepentry=qwen_code&paywallScene=cli"
+        return "${url}${sep}entry=qwen_code&paywallScene=cli"
     }
 
     private data class Credential(
