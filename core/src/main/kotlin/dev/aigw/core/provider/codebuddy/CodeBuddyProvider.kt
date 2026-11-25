@@ -1739,7 +1739,9 @@ private fun normalizeCodeBuddyMessages(obj: JsonObject) {
     }
 
     // 11153「the conversation must end with a user message」：工具结果之后紧跟 user 消息
-    // （Claude Code 的提醒、任务中途输入、工具图片）会被上游拒；中间插一条空 assistant 即可通过。
+    // （Claude Code 的提醒、任务中途输入、工具图片）会被上游拒；中间插一条 assistant 即可通过。
+    // 注意：content 必须非空——插 `""` 会被上游 11151「a message has empty content」拒绝，
+    // 空字符串桥接因此形同虚设（旧实现就是栽在这里）。
     // Gson 的 JsonArray 没有 add(index, e)，所以新数组重建。
     val rebuilt = JsonArray()
     var prevRole: String? = null
@@ -1749,7 +1751,7 @@ private fun normalizeCodeBuddyMessages(obj: JsonObject) {
             rebuilt.add(
                 JsonObject().apply {
                     addProperty("role", "assistant")
-                    addProperty("content", "")
+                    addProperty("content", " ")
                 },
             )
         }

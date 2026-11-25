@@ -226,7 +226,8 @@ class CodeBuddyPayloadTest {
         ).getAsJsonArray("messages")
         assertEquals(5, messages.size())
         assertEquals("assistant", messages[3].asJsonObject.get("role").asString)
-        assertEquals("", messages[3].asJsonObject.get("content").asString)
+        // 桥接 assistant 的 content 必须非空，否则上游 11151「a message has empty content」拒绝
+        assertEquals(" ", messages[3].asJsonObject.get("content").asString)
         assertEquals("user", messages[4].asJsonObject.get("role").asString)
     }
 
