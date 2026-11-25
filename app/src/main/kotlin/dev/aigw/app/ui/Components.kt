@@ -612,7 +612,7 @@ fun QuotaPackBar(pack: dev.aigw.core.provider.QuotaPack) {
             val fraction = if (pack.limit > 0) {
                 (pack.remain.toFloat() / pack.limit).coerceIn(0f, 1f)
             } else {
-                0f
+                0.35f // 无上限额度包（积分余额类）：画一段中性填充，表示「有余额但无百分比概念」
             }
             Box(
                 Modifier
@@ -633,6 +633,7 @@ fun QuotaPackBar(pack: dev.aigw.core.provider.QuotaPack) {
                         .clip(CircleShape)
                         .background(
                             when {
+                                pack.limit <= 0 -> MaterialTheme.colorScheme.outline.copy(alpha = 0.5f)
                                 fraction > 0.5f -> MaterialTheme.colorScheme.onSurface
                                 fraction > 0.2f -> gold
                                 else -> MaterialTheme.colorScheme.error
@@ -641,10 +642,10 @@ fun QuotaPackBar(pack: dev.aigw.core.provider.QuotaPack) {
                 )
             }
             Text(
-                text = if (pack.limit > 0) {
-                    "${(fraction * 100).toInt()}% (${pack.remain}/${pack.limit})"
-                } else {
-                    "—"
+                text = when {
+                    pack.limit > 0 -> "${(fraction * 100).toInt()}% (${pack.remain}/${pack.limit})"
+                    pack.remain >= 0 -> "剩余 ${pack.remain}"
+                    else -> "—"
                 },
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
