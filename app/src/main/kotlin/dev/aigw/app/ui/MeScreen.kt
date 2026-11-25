@@ -498,10 +498,19 @@ fun UsageScreen(state: AppUiState, viewModel: AppViewModel, onBack: () -> Unit) 
                 .mapValues { (_, list) -> list.fold(UsageStats()) { a, b -> a + b } }
                 .entries.sortedByDescending { it.value.totalTokens }
         }
+        // 模型名前缀 → providerId 的归一化：模型带区域前缀（trae-cn/xxx、codebuddy-global/xxx），
+        // 而 byProvider 的 key 是纯 providerId（trae）。这里把区域后缀剥掉做映射。
+        fun prefixToProvider(prefix: String): String = when {
+            prefix.endsWith("-cn") -> prefix.removeSuffix("-cn")
+            prefix.endsWith("-global") -> prefix.removeSuffix("-global")
+            prefix.startsWith("custom:") -> prefix.substringAfter(':').substringBefore('-')
+            else -> prefix
+        }
+
         // 每个供应商下有多少个不同模型：模型名前缀就是 providerId（如 codebuddy-cn/glm-5.3）
         val providerModelCount = remember(groupsInRange) {
             groupsInRange.flatMap { it.byModel.keys }
-                .groupingBy { it.substringBefore('/') }
+                .groupingBy { prefixToProvider(it.substringBefore('/')) }
                 .eachCount()
         }
         val byModel = remember(groupsInRange, mergeModels) {
@@ -514,17 +523,19 @@ fun UsageScreen(state: AppUiState, viewModel: AppViewModel, onBack: () -> Unit) 
             grouped.mapValues { (_, list) -> list.fold(UsageStats()) { a, b -> a + b } }
                 .entries.sortedByDescending { it.value.totalTokens }
         }
-        // 每个模型（合并后）出现在多少个供应商下：由原始模型名前缀数
+        // 每个模型的服务商数量：
+        // - 合并模式：列表 key 是「去前缀模型名」，对每个原始模型名取「去前缀名 → providerId」去重计数
+        // - 不合并模式：列表 key 是完整模型名（provider/model），同样按 providerId 去重计数
         val modelProviderCount = remember(groupsInRange, mergeModels) {
             val pairs = groupsInRange.flatMap { g -> g.byModel.keys }
-                .map { ModelKey.merged(it.substringAfterLast('/')) to it.substringBefore('/') }
-            pairs.groupBy({ it.first }, { it.second })
-                .mapValues { (_, providers) -> providers.distinct().size }
-            // 不合并时按完整模型名数
-                .let { merged ->
-                    if (mergeModels) merged
-                    else pairs.groupBy({ it.second }, { it.first }).mapValues { (_, keys) -> keys.distinct().size }
-                }
+                .map { it to prefixToProvider(it.substringBefore('/')) }
+            if (mergeModels) {
+                pairs.groupBy({ ModelKey.merged(it.first) }, { it.second })
+                    .mapValues { (_, providers) -> providers.distinct().size }
+            } else {
+                pairs.groupBy({ it.first }, { it.second })
+                    .mapValues { (_, providers) -> providers.distinct().size }
+            }
         }
 
         // 切换胶囊 + 合并开关

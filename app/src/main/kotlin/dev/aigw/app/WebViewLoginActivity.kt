@@ -61,7 +61,7 @@ class WebViewLoginActivity : Activity() {
         android.webkit.WebStorage.getInstance().deleteAllData()
         wv.settings.databaseEnabled = true
         wv.settings.javaScriptCanOpenWindowsAutomatically = true
-        wv.settings.userAgentString = MOBILE_UA
+        wv.settings.userAgentString = PC_UA
         CookieManager.getInstance().setAcceptCookie(true)
         CookieManager.getInstance().setAcceptThirdPartyCookies(wv, true)
         wv.webViewClient = object : WebViewClient() {
@@ -219,8 +219,10 @@ class WebViewLoginActivity : Activity() {
         private const val POLL_INTERVAL_MS = 1_500L
         /** 提取校验失败后的慢轮询间隔：避免反复打上游 token 接口。 */
         private const val SLOW_POLL_INTERVAL_MS = 10_000L
-        private const val MOBILE_UA =
-            "Mozilla/5.0 (Linux; Android 15; Mobile) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Mobile Safari/537.36"
+        /** PC UA：chatglm 的 refresh_token（chatglm_refresh_token 键）只存在 PC 版页面的 localStorage；
+         *  移动版页面登录后存的是另一套短时效 session，用它换 refresh 恒 401。 */
+        private const val PC_UA =
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36 Edg/143.0.0.0"
 
         /** 生成读取 localStorage 的 JS：全量扫描+回传所有键名，供排查与匹配。 */
         private fun extractLocalStorageJs(keys: List<String>): String {
