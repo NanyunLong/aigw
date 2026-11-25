@@ -49,8 +49,8 @@ class GlmProvider(
     override val authKind: AuthKind = AuthKind.WEBVIEW_EXTRACT
 
     // chatglm.cn 已改版成 AgentMore（新平台），老「智谱清言」迁到 original.chatglm.cn。
-    // chatglm_refresh_token 键只存在老清言的 localStorage，AgentMore 登录存的是另一套 token，
-    // 用它换 refresh 恒 401「凭证无效」。必须打开老清言域名。
+    // refresh_token 由 js-cookie 写在老清言域（chatglm_refresh_token，Secure+SameSite=None），
+    // 登录页与 API 必须同域，否则 cookie/token 对不上。
     override val loginUrl: String = "https://original.chatglm.cn"
     override val localStorageKeys: List<String> = listOf(REFRESH_TOKEN_KEY)
     // 兜底：部分登录方式（扫码/第三方）把 refresh_token 放在 Cookie 里而不是 localStorage。
@@ -76,7 +76,7 @@ class GlmProvider(
         return model
     }
 
-    override fun hosts(): List<String> = listOf("chatglm.cn")
+    override fun hosts(): List<String> = listOf("original.chatglm.cn", "chatglm.cn")
 
     // ------------------------------------------------------------------ 对话
 
@@ -106,7 +106,8 @@ class GlmProvider(
             put("Authorization", "Bearer $token")
             put("Content-Type", "application/json")
             put("Accept", "text/event-stream")
-            put("Origin", "https://chatglm.cn")
+            put("Origin", "https://original.chatglm.cn")
+            put("Referer", "https://original.chatglm.cn/")
             put("App-Name", "chatglm")
             put("X-App-Fr", "browser_extension")
             put("X-App-Platform", "pc")
@@ -223,6 +224,9 @@ class GlmProvider(
             put("X-Sign", sign)
             put("X-Timestamp", ts)
             put("X-Nonce", nonce)
+            // 上游网关校验来源：缺 Origin/Referer 时 original 域返回 40014 bad request。
+            put("Origin", "https://original.chatglm.cn")
+            put("Referer", "https://original.chatglm.cn/")
             put("User-Agent", USER_AGENT)
         }
         val (status, text) = post("$base/user-api/user/refresh", "{}", headers)
@@ -370,7 +374,7 @@ class GlmProvider(
 
     companion object {
         const val ID = "glm"
-        private const val BASE = "https://chatglm.cn/chatglm"
+        private const val BASE = "https://original.chatglm.cn/chatglm"
         private const val REFRESH_TOKEN_KEY = "chatglm_refresh_token"
         private const val SIGN_SECRET = "8a1317a7468aa3ad86e997d08f3f31cb"
         private const val DEFAULT_ASSISTANT_ID = "65940acff94777010aa6b796"

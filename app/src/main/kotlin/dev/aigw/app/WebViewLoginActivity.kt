@@ -82,14 +82,15 @@ class WebViewLoginActivity : Activity() {
                 // 白屏诊断：3 秒后若 #app 仍为空，把 JS 错误与资源失败 toast 出来
                 handler.postDelayed({
                     view.evaluateJavascript(
-                        "(function(){var a=document.getElementById('app');" +
+                        "(function(){try{" +
+                            "var a=document.getElementById('app');" +
                             "var n=a?a.innerHTML.length:-1;" +
                             "if(n>200)return 'ok:'+n;" +
                             "var errs=(window.__aigwErrs||[]).slice(0,3).join(' | ');" +
                             "var res=performance.getEntriesByType('resource').filter(function(r){" +
                             "return r.responseStatus>=400||r.transferSize===0&&r.decodedBodySize===0;})" +
                             ".slice(0,3).map(function(r){return r.name.split('/').pop();}).join(',');" +
-                            "return 'app='+n+' errs='+errs+' res='+res+' url='+location.href;})()",
+                            "return 'app='+n+' errs='+errs+' res='+res+' url='+location.href;}catch(e){return 'app=EX:'+e.message;}})()",
                     ) { r ->
                         val s = r?.trim('"') ?: ""
                         if (s.startsWith("app=")) toast("白屏诊断：$s".take(300))
