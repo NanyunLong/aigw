@@ -370,7 +370,7 @@ class GatewayHttpServer(
         if (!auth.ok) return unauthorized(session)
         val clientKey = auth.clientKey
 
-        val (rawBody, readResult) = readBody(session); try { System.err.println("[AIGW-BODY] len=" + rawBody.length + " head=" + rawBody.take(1200)) } catch (_: Throwable) {}
+        val (rawBody, readResult) = readBody(session); try { java.io.File("/data/local/tmp/aigw_body.txt").writeText(rawBody) } catch (_: Throwable) {}
         if (readResult == BodyReadResult.OVER_LIMIT) {
             return errorResponse(413, "payload_too_large", "请求体超过网关 ${MAX_BODY_BYTES / (1024 * 1024)}MB 上限")
         }
