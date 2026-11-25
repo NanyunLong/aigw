@@ -177,13 +177,15 @@ class GlmProvider(
         if (refreshToken.isEmpty()) {
             throw IllegalStateException("未在 localStorage/Cookie 里找到 chatglm_refresh_token，请确认已登录")
         }
-        // 轻量校验：换一次 access_token。没校验过的话废 token 也会被收进池子，
-        // 表现为「点登录立刻成功」但模型全 401——必须拦在入口。
+        // 轻量校验：换一次 access_token。chatglm 的 refresh 接口会**轮换 refresh_token**
+        // （返回新 token、旧 token 随即作废），所以必须存新 token，否则存进去的就是废凭证。
         val access = runCatching { acquireToken(Credential(refreshToken)) }.getOrElse {
             throw IllegalStateException("凭证无效（${it.message}），请在页面里退出后重新登录")
         }
-        val uid = access.userId.ifEmpty { jwtUserId(refreshToken) }.ifEmpty { refreshToken.take(16) }
-        return ProviderAccount(id, uid, "智谱账号", Credential(refreshToken).toJson())
+        // 关键：优先用轮换出的新 refresh_token，旧的已作废
+        val finalToken = access.rotatedRefreshToken.ifEmpty { refreshToken }
+        val uid = access.userId.ifEmpty { jwtUserId(finalToken) }.ifEmpty { finalToken.take(16) }
+        return ProviderAccount(id, uid, "智谱账号", Credential(finalToken).toJson())
     }
 
     /** 从 JWT refresh_token 的 payload 里取 sub / user_id（取不到返回空串，不抛异常）。 */
