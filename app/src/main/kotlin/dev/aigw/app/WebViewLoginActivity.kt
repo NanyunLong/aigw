@@ -66,6 +66,7 @@ class WebViewLoginActivity : Activity() {
         CookieManager.getInstance().setAcceptThirdPartyCookies(wv, true)
         wv.webViewClient = object : WebViewClient() {
             override fun onPageStarted(view: WebView, url: String, favicon: android.graphics.Bitmap?) {
+                android.util.Log.i("AigwWV", "onPageStarted: $url")
                 // 文档一开始就挂错误钩子，白屏时能拿到真实 JS 异常（诊断用，不影响页面）。
                 view.evaluateJavascript(
                     "window.__aigwErrs=[];window.addEventListener('error',function(e){" +
@@ -77,6 +78,7 @@ class WebViewLoginActivity : Activity() {
             }
 
             override fun onPageFinished(view: WebView, url: String) {
+                android.util.Log.i("AigwWV", "onPageFinished: $url")
                 // 页面加载完成后延迟检测：登录成功跳转后 localStorage 可能异步写入
                 handler.postDelayed({ detectNow(sup) }, 500)
                 // 白屏诊断：3 秒后若 #app 仍为空，把 JS 错误与资源失败 toast 出来
@@ -93,9 +95,18 @@ class WebViewLoginActivity : Activity() {
                             "return 'app='+n+' errs='+errs+' res='+res+' url='+location.href;}catch(e){return 'app=EX:'+e.message;}})()",
                     ) { r ->
                         val s = r?.trim('"') ?: ""
+                        android.util.Log.i("AigwWV", "白屏诊断: $s")
                         if (s.startsWith("app=")) toast("白屏诊断：$s".take(300))
                     }
                 }, 3000)
+            }
+
+            override fun onReceivedError(view: WebView, request: WebResourceRequest, error: WebResourceError) {
+                android.util.Log.e("AigwWV", "onReceivedError: ${request.url} code=${error.errorCode} desc=${error.description}")
+            }
+
+            override fun onReceivedHttpError(view: WebView, request: WebResourceRequest, errorResponse: WebResourceResponse) {
+                android.util.Log.e("AigwWV", "onReceivedHttpError: ${request.url} -> ${errorResponse.statusCode} ${errorResponse.reasonPhrase}")
             }
         }
         wv.addJavascriptInterface(ExtractBridge(sup), JS_BRIDGE)
