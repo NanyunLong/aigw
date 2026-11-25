@@ -106,7 +106,7 @@ class LingmaProvider internal constructor(
             name = queryParam(callbackUrl, "name").orEmpty()
             oauthToken = queryParam(callbackUrl, "access_token").orEmpty()
             refreshToken = queryParam(callbackUrl, "refresh_token").orEmpty()
-            expireTime = queryParam(callbackUrl, "expire_time").toLongOrNull() ?: 0L
+            expireTime = queryParam(callbackUrl, "expire_time")?.toLongOrNull() ?: 0L
         }
         if (uid.isEmpty() || oauthToken.isEmpty()) {
             throw IllegalStateException("回调缺少凭证（uid/access_token 为空）")
