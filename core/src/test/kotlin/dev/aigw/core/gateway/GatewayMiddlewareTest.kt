@@ -242,6 +242,46 @@ class GatewayMiddlewareTest {
     }
 
     @Test
+    fun `空 text part 被规整成占位`() {
+        val mw = EmptyContentSanitizeMiddleware()
+        val original = json(
+            """{"messages":[{"role":"user","content":[{"type":"text","text":""},{"type":"image_url","image_url":{"url":"x"}}]}]}""",
+        )
+
+        val result = mw.onRequest(context(), original)
+
+        val content = result.arrayOrNull("messages")!![0].asJsonObject.get("content").asJsonArray
+        assertEquals("[image]", content[0].asJsonObject.stringOrNull("text"), "空 text part 必须被填成占位")
+        assertEquals("image_url", content[1].asJsonObject.stringOrNull("type"))
+    }
+
+    @Test
+    fun `纯 image_url 无 text 时注入占位`() {
+        val mw = EmptyContentSanitizeMiddleware()
+        val original = json(
+            """{"messages":[{"role":"user","content":[{"type":"image_url","image_url":{"url":"x"}}]}]}""",
+        )
+
+        val result = mw.onRequest(context(), original)
+
+        val content = result.arrayOrNull("messages")!![0].asJsonObject.get("content").asJsonArray
+        assertEquals("text", content[0].asJsonObject.stringOrNull("type"))
+        assertEquals("[image]", content[0].asJsonObject.stringOrNull("text"))
+    }
+
+    @Test
+    fun `空数组 content 塞单空格`() {
+        val mw = EmptyContentSanitizeMiddleware()
+        val original = json("""{"messages":[{"role":"user","content":[]}]}""")
+
+        val result = mw.onRequest(context(), original)
+
+        val content = result.arrayOrNull("messages")!![0].asJsonObject.get("content").asJsonArray
+        assertEquals(1, content.size())
+        assertEquals(" ", content[0].asJsonObject.stringOrNull("text"))
+    }
+
+    @Test
     fun `无空 content 时原样返回入参`() {
         val mw = EmptyContentSanitizeMiddleware()
         val original = json("""{"messages":[{"role":"user","content":"正常"}]}""")

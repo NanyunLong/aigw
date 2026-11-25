@@ -203,32 +203,61 @@ class EmptyContentSanitizeMiddleware : GatewayMiddleware {
                         addProperty("content", " ")
                     })
                 }
-                // 多模态数组形态：所有 part 都不是 text → 加一条 "[image]" text part
+                // 多模态数组形态：规范化空 text / 纯图片
                 contentNode.isJsonArray -> {
                     val arr = contentNode.asJsonArray
-                    val hasText = arr.any { part ->
-                        part.isJsonObject && part.asJsonObject.stringOrNull("type") == "text"
+                    // 是否存在「有实际文本内容」的 text part（text 非空白才算）
+                    val hasRealText = arr.any { part ->
+                        part.isJsonObject &&
+                            part.asJsonObject.stringOrNull("type") == "text" &&
+                            !(part.asJsonObject.stringOrNull("text").orEmpty()).isBlank()
                     }
-                    if (hasText || arr.size() == 0) {
-                        // 有文本部分说明已经有可读内容；空数组也无伤大雅，跳过
-                        if (arr.size() == 0 && !hasText) {
+                    if (arr.size() == 0) {
+                        // 空数组 → 塞一条单空格 text，避免严格上游报 empty content
+                        changed = true
+                        copy.add(JsonObject().apply {
+                            message.entrySet().forEach { (key, value) -> add(key, value) }
+                            add("content", JsonArray().apply {
+                                add(JsonObject().apply {
+                                    addProperty("type", "text")
+                                    addProperty("text", " ")
+                                })
+                            })
+                        })
+                    } else if (hasRealText) {
+                        // 已有真实文本：把「空白/空的 text part」也规整掉，避免混进空 part
+                        // （多数上游对空 text part 容忍，但严格上游可能拒绝；统一填成 "[image]"
+                        //  既不丢信息又保证非空）
+                        var touched = false
+                        val cleaned = JsonArray()
+                        for (part in arr) {
+                            if (part.isJsonObject &&
+                                part.asJsonObject.stringOrNull("type") == "text" &&
+                                (part.asJsonObject.stringOrNull("text").orEmpty()).isBlank()
+                            ) {
+                                touched = true
+                                cleaned.add(JsonObject().apply {
+                                    addProperty("type", "text")
+                                    addProperty("text", "[image]")
+                                })
+                            } else {
+                                cleaned.add(part)
+                            }
+                        }
+                        if (touched) {
                             changed = true
                             copy.add(JsonObject().apply {
                                 message.entrySet().forEach { (key, value) -> add(key, value) }
-                                add("content", JsonArray().apply {
-                                    add(JsonObject().apply {
-                                        addProperty("type", "text")
-                                        addProperty("text", " ")
-                                    })
-                                })
+                                add("content", cleaned)
                             })
                         } else {
                             copy.add(message)
                         }
                     } else {
+                        // 没有任何真实文本（全是空 text / 纯 image_url 等非文本 part）：
+                        // 在最前注入 "[image]" text part，让严格校验先看到非空 text
                         changed = true
                         val newArr = JsonArray()
-                        // 把 text part 放最前，让严格校验先看到非空 text
                         newArr.add(JsonObject().apply {
                             addProperty("type", "text")
                             addProperty("text", "[image]")
