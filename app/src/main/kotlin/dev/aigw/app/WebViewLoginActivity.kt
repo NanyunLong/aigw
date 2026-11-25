@@ -2,17 +2,14 @@ package dev.aigw.app
 
 import android.annotation.SuppressLint
 import android.app.Activity
-import android.graphics.Color
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
-import android.view.Gravity
 import android.view.ViewGroup
 import android.webkit.CookieManager
 import android.webkit.JavascriptInterface
 import android.webkit.WebView
 import android.webkit.WebViewClient
-import android.widget.Button
 import android.widget.LinearLayout
 import android.widget.Toast
 import dev.aigw.core.gateway.LoginOutcome
@@ -22,12 +19,10 @@ import dev.aigw.core.provider.WebViewExtractSupport
 /**
  * 内置 WebView 登录页：打开 [WebViewExtractSupport.loginUrl]，**自动**检测登录态。
  *
- * 每次页面加载完成、以及每 [POLL_INTERVAL_MS] 定时，都会读取目标域名下的
- * localStorage 与 Cookie；一旦 provider 需要的字段齐全就自动提取凭证并落池，
- * 用户登录后无需任何额外点击。
- *
- * 与系统浏览器登录完全独立：只在 WEBVIEW_EXTRACT 型供应商登录时使用，
- * 不影响 Trae/Antigravity/WorkBuddy 等原有登录通道。
+ * 界面只有网页本身，不额外画标题栏/按钮 —— 与系统浏览器登录的观感一致，
+ * 用户看到的就是原站登录页。每次页面加载完成、以及每 [POLL_INTERVAL_MS] 定时，
+ * 都会读取目标域名下的 localStorage 与 Cookie；字段齐全即自动提取凭证落池并关闭。
+ * 返回走系统返回键/手势（有历史时先回上一页）。
  */
 class WebViewLoginActivity : Activity() {
 
@@ -58,8 +53,11 @@ class WebViewLoginActivity : Activity() {
         val wv = WebView(this)
         wv.settings.javaScriptEnabled = true
         wv.settings.domStorageEnabled = true
+        wv.settings.databaseEnabled = true
         wv.settings.javaScriptCanOpenWindowsAutomatically = true
         wv.settings.userAgentString = MOBILE_UA
+        CookieManager.getInstance().setAcceptCookie(true)
+        CookieManager.getInstance().setAcceptThirdPartyCookies(wv, true)
         wv.webViewClient = object : WebViewClient() {
             override fun onPageFinished(view: WebView, url: String) {
                 // 页面加载完成后立即检测一次（登录成功通常会跳转回首页）
@@ -69,26 +67,24 @@ class WebViewLoginActivity : Activity() {
         wv.addJavascriptInterface(ExtractBridge(sup), JS_BRIDGE)
         webView = wv
 
-        // 顶栏：返回 + 提示；不设「完成登录」，登录后自动提取
-        val close = Button(this).apply {
-            text = "返回"
-            setTextColor(Color.WHITE)
-            setBackgroundColor(Color.rgb(120, 120, 120))
-            setOnClickListener { finish() }
-        }
-        val top = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
-            setPadding(12, 12, 12, 12)
-            addView(close, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
-        }
-
-        val root = LinearLayout(this).apply {
+        // 只有网页本身：不画标题栏、不画按钮
+        return LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            addView(top, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
-            addView(wv, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f))
+            addView(
+                wv,
+                LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT,
+                    ViewGroup.LayoutParams.MATCH_PARENT,
+                ),
+            )
         }
-        return root
+    }
+
+    /** 返回键：WebView 有历史就先退一页，否则退出登录页。 */
+    @Deprecated("Activity.onBackPressed")
+    override fun onBackPressed() {
+        val wv = webView
+        if (wv != null && wv.canGoBack()) wv.goBack() else super.onBackPressed()
     }
 
     /** 读取 localStorage 目标键（JS），有值则由桥提交回 Kotlin 提取。 */

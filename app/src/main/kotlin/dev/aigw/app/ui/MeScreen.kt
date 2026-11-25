@@ -432,7 +432,6 @@ fun UsageScreen(state: AppUiState, viewModel: AppViewModel, onBack: () -> Unit) 
         SectionCard(enterIndex = 4) {
             SectionLabel("趋势")
             if (range == UsageRange.TODAY) {
-                CacheHitGauge(sum, highlight = true)
                 Text(
                     text = "今日用量按天粒度展示，点开「7天/30天」可看逐日趋势",
                     style = MaterialTheme.typography.bodySmall,
@@ -515,18 +514,6 @@ fun UsageScreen(state: AppUiState, viewModel: AppViewModel, onBack: () -> Unit) 
             }
         }
 
-        // 累计（含缓存环、请求结果分布）
-        SectionCard(enterIndex = 7) {
-            SectionLabel("累计")
-            CacheHitGauge(state.total)
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
-                StatCell(formatCount(state.total.requests), "请求")
-                StatCell(formatCount(state.total.success), "成功")
-                StatCell(formatCount(state.total.failed), "失败")
-                StatCell(formatCount(state.total.aborted), "中断")
-            }
-        }
-
         SectionCard(enterIndex = 8) {
             SectionLabel("存储")
             val report = state.storage
@@ -590,6 +577,11 @@ private fun OverviewGrid(stats: UsageStats) {
             )
             StatCell(formatTokens(stats.cachedTokens), "缓存命中", Modifier.weight(1f))
             StatCell(formatMicroUsd(stats.costMicros), "费用（美元）", Modifier.weight(1f))
+        }
+        Row(Modifier.fillMaxWidth()) {
+            StatCell(formatCount(stats.success), "成功", Modifier.weight(1f))
+            StatCell(formatCount(stats.failed), "失败", Modifier.weight(1f))
+            StatCell(formatCount(stats.aborted), "中断", Modifier.weight(1f))
         }
     }
 }
@@ -752,118 +744,6 @@ private fun CostLine(stats: UsageStats) {
     }
 }
 
-/**
- * 输入 token 构成环：命中缓存 / 未命中 / 输出 三段按比例分色填充，中心显示命中率。
- *
- * 环形绘制借鉴 open-claude-ui（MIT, Caho1）的 Token 仪表做法：
- * `strokeDasharray = 2πr`、`strokeDashoffset = circumference × (1 − ratio)`，
- * 各段用 offset 依次错开。没有输入 token 时只显示「—」，不画环（不编造 0%）。
- */
-@Composable
-private fun CacheHitGauge(stats: UsageStats, highlight: Boolean = false) {
-    val hitColor = MaterialTheme.colorScheme.tertiary
-    val missColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.55f)
-    val outputColor = MaterialTheme.colorScheme.secondary.copy(alpha = 0.75f)
-    val trackColor = MaterialTheme.colorScheme.surfaceVariant
-    val gold = LocalAppColors.current.goldStart
-    val centerColor = if (highlight) gold else MaterialTheme.colorScheme.onSurface
-    val hit = stats.cachedTokens.coerceAtMost(stats.promptTokens)
-    val miss = (stats.promptTokens - hit).coerceAtLeast(0)
-    val output = stats.completionTokens
-    val total = hit + miss + output
-    val percent = stats.cacheHitPercent
-    Row(
-        modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(16.dp),
-    ) {
-        Box(contentAlignment = Alignment.Center) {
-            Canvas(Modifier.size(72.dp)) {
-                val stroke = 8.dp.toPx()
-                val inset = stroke / 2
-                val arcSize = Size(size.width - stroke, size.height - stroke)
-                val topLeft = Offset(inset, inset)
-                // 轨道
-                drawArc(
-                    color = trackColor,
-                    startAngle = -90f,
-                    sweepAngle = 360f,
-                    useCenter = false,
-                    topLeft = topLeft,
-                    size = arcSize,
-                    style = Stroke(width = stroke, cap = StrokeCap.Round),
-                )
-                if (total > 0L) {
-                    var start = -90f
-                    for ((value, color) in listOf(
-                        hit to hitColor,
-                        miss to missColor,
-                        output to outputColor,
-                    )) {
-                        if (value <= 0L) continue
-                        val sweep = 360f * value / total.toFloat()
-                        // 段间留 2° 缝隙，避免同色相邻时粘成一团
-                        val gap = if (sweep > 6f) 2f else 0f
-                        drawArc(
-                            color = color,
-                            startAngle = start + gap / 2,
-                            sweepAngle = (sweep - gap).coerceAtLeast(0f),
-                            useCenter = false,
-                            topLeft = topLeft,
-                            size = arcSize,
-                            style = Stroke(width = stroke, cap = StrokeCap.Round),
-                        )
-                        start += sweep
-                    }
-                }
-            }
-            Text(
-                text = if (percent != null) "${String.format(Locale.US, "%.0f", percent)}%" else "—",
-                style = MaterialTheme.typography.titleMedium.copy(fontFamily = FontFamily.Monospace),
-                color = centerColor,
-                fontWeight = FontWeight.SemiBold,
-            )
-        }
-        // 没有任何 token 数据时只留一个空环 + 「—」：图例全为 0 没有信息量，还会与上方的请求数重复
-        if (total > 0L) {
-            Column(verticalArrangement = Arrangement.spacedBy(4.dp), modifier = Modifier.weight(1f)) {
-                GaugeLegend("命中缓存", hit, hitColor)
-                GaugeLegend("未命中", miss, missColor)
-                GaugeLegend("输出", output, outputColor)
-            }
-        } else {
-            Text(
-                text = "还没有 token 用量",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.weight(1f),
-            )
-        }
-    }
-}
-
-@Composable
-private fun GaugeLegend(label: String, tokens: Long, color: androidx.compose.ui.graphics.Color) {
-    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-        Box(
-            Modifier
-                .size(8.dp)
-                .clip(androidx.compose.foundation.shape.CircleShape)
-                .background(color),
-        )
-        Text(
-            text = label,
-            style = MaterialTheme.typography.labelSmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            modifier = Modifier.weight(1f),
-        )
-        Text(
-            text = formatTokens(tokens),
-            style = MaterialTheme.typography.labelSmall.copy(fontFamily = FontFamily.Monospace),
-            color = MaterialTheme.colorScheme.onSurface,
-        )
-    }
-}
 
 /**
  * 「并发与容错」入口的右侧元信息。

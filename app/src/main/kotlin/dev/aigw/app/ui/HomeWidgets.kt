@@ -842,24 +842,59 @@ internal fun HomeQuotaWidget(state: AppUiState, viewModel: AppViewModel) {
         accounts.forEach { viewModel.loadCreditPacks(it.providerId, it.uid) }
     }
 
+    // 按供应商 → 国内/国外分组，组内所有账号的同名额度包合并
+    data class GroupKey(val providerId: String, val region: String)
+    val groups = accounts.groupBy { account ->
+        val region = viewModel.accountRegion(account.providerId, account.uid).ifEmpty { "cn" }
+        GroupKey(account.providerId, region)
+    }
+
     SectionCard {
         SectionHeader("上游配额池")
-        for (account in accounts) {
-            val packs = state.creditPacks["${account.providerId}/${account.uid}"].orEmpty()
+        groups.entries.sortedWith(compareBy({ it.key.providerId }, { it.key.region })).forEach { (key, accs) ->
+            val provider = state.providers.firstOrNull { it.id == key.providerId }
+            val providerName = provider?.displayName ?: key.providerId
+            val regionLabel = when (key.region) {
+                "cn" -> "国内"
+                "global" -> "国外"
+                else -> key.region
+            }
             Text(
-                text = account.nickname.ifEmpty { account.uid },
+                text = "$providerName · $regionLabel（${accs.size} 个账号）",
                 style = MaterialTheme.typography.bodyMedium,
                 fontWeight = FontWeight.SemiBold,
             )
-            if (packs.isEmpty()) {
+            // 合并该组所有账号的同名 QuotaPack
+            val merged = LinkedHashMap<String, dev.aigw.core.provider.QuotaPack>()
+            for (acc in accs) {
+                val packs = state.creditPacks["${acc.providerId}/${acc.uid}"].orEmpty()
+                for (pack in packs) {
+                    val existing = merged[pack.name]
+                    if (existing == null) {
+                        merged[pack.name] = pack.copy()
+                    } else {
+                        merged[pack.name] = existing.copy(
+                            limit = existing.limit + pack.limit,
+                            used = existing.used + pack.used,
+                            remain = existing.remain + pack.remain,
+                            expireAt = if (existing.expireAt == 0L) pack.expireAt
+                                else if (pack.expireAt == 0L) existing.expireAt
+                                else minOf(existing.expireAt, pack.expireAt),
+                            scope = if (existing.scope == pack.scope) existing.scope
+                                else listOf(existing.scope, pack.scope).filter { it.isNotEmpty() }.distinct().joinToString(" / "),
+                        )
+                    }
+                }
+            }
+            if (merged.isEmpty()) {
                 Text(
-                    text = if (account.detail.isNotEmpty()) account.detail else "尚未拉取配额",
+                    text = "尚未拉取配额",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             } else {
                 Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                    for (pack in packs) {
+                    for (pack in merged.values) {
                         QuotaPackBar(pack)
                     }
                 }

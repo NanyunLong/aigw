@@ -16,6 +16,10 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -182,7 +186,9 @@ fun StackedTrendChart(
     }
 }
 
-/** 排行榜：服务商/模型，带占比进度条与 AIGW 详细字段。 */
+/** Minis 风格排行榜（对齐 UsageStatsScreen.kt 的 GroupList/GroupRow）。 */
+private const val TOP_N = 8
+
 @Composable
 fun UsageRankList(
     title: String,
@@ -191,54 +197,122 @@ fun UsageRankList(
     modifier: Modifier = Modifier,
 ) {
     if (entries.isEmpty()) return
-    val totalTokens = entries.sumOf { it.second.totalTokens }.coerceAtLeast(1L)
-    Column(modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+    val gold = LocalAppColors.current.goldEnd
+    val onVariant = MaterialTheme.colorScheme.onSurfaceVariant
+    val track = MaterialTheme.colorScheme.outline.copy(alpha = 0.18f)
+    val grandTotal = entries.sumOf { it.second.totalTokens }.coerceAtLeast(1L)
+    val known = entries.filter { it.first.isNotBlank() }
+    val unknown = entries.filter { it.first.isBlank() }
+    val cut = if (known.size == TOP_N + 1) known.size else TOP_N
+    val top = known.take(cut)
+    val rest = known.drop(cut)
+    var showRest by remember { mutableStateOf(false) }
+
+    Column(modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(12.dp)) {
         Text(title, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
-        entries.forEachIndexed { idx, (key, s) ->
-            Column(Modifier.fillMaxWidth()) {
-                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                    Text(
-                        "${idx + 1}",
-                        fontSize = 12.sp,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.width(20.dp),
-                    )
-                    Text(
-                        nameOf(key),
-                        fontSize = 13.sp,
-                        fontWeight = FontWeight.Medium,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                        modifier = Modifier.weight(1f),
-                    )
-                    Text(
-                        formatTokens(s.totalTokens),
-                        fontSize = 13.sp,
-                        fontWeight = FontWeight.SemiBold,
-                        color = LocalAppColors.current.goldEnd,
-                    )
-                }
-                Spacer(Modifier.height(4.dp))
-                Box(
-                    Modifier.fillMaxWidth().height(5.dp).clip(RoundedCornerShape(3.dp))
-                        .background(MaterialTheme.colorScheme.outline.copy(alpha = 0.15f)),
-                ) {
-                    val frac = (s.totalTokens.toFloat() / totalTokens).coerceIn(0f, 1f)
-                    Box(
-                        Modifier.fillMaxWidth(frac).height(5.dp).clip(RoundedCornerShape(3.dp))
-                            .background(LocalAppColors.current.goldEnd),
-                    )
-                }
-                Spacer(Modifier.height(3.dp))
-                Text(
-                    "入 ${formatTokens(s.promptTokens)} · 出 ${formatTokens(s.completionTokens)} · " +
-                        "缓存 ${formatTokens(s.cachedTokens)} · ${s.requests} 次 · 费用 ${formatMicroUsd(s.costMicros)}",
-                    fontSize = 11.sp,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.padding(start = 20.dp),
-                    maxLines = 2,
-                )
+        (if (showRest) known else top).forEach { (key, s) ->
+            MinisGroupRow(
+                name = nameOf(key),
+                stats = s,
+                share = s.totalTokens.toFloat() / grandTotal,
+                gold = gold, track = track, onVariant = onVariant,
+            )
+        }
+        if (rest.isNotEmpty() && !showRest) {
+            Row(
+                Modifier.fillMaxWidth().clip(RoundedCornerShape(10.dp)).clickable { showRest = true }.padding(vertical = 6.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text("其他 ${rest.size} 项", fontSize = 12.sp, color = gold, fontWeight = FontWeight.SemiBold)
+                Spacer(Modifier.weight(1f))
+                Text(formatTokens(rest.sumOf { it.second.totalTokens }), fontSize = 12.sp, color = onVariant)
             }
         }
+        unknown.forEach { (key, s) ->
+            MinisGroupRow(
+                name = nameOf(key).ifBlank { "未知" },
+                stats = s,
+                share = s.totalTokens.toFloat() / grandTotal,
+                gold = gold, track = track, onVariant = onVariant,
+            )
+        }
+    }
+}
+
+@Composable
+private fun MinisGroupRow(
+    name: String,
+    stats: UsageStats,
+    share: Float,
+    gold: Color,
+    track: Color,
+    onVariant: Color,
+) {
+    val total = stats.totalTokens
+    // AIGW: promptTokens 不含缓存, cachedTokens = cacheRead；无 cacheWrite 字段
+    val input = stats.promptTokens
+    val cacheRead = stats.cachedTokens
+    val cacheWrite = 0L
+    val output = stats.completionTokens
+    val nonCached = input + cacheWrite + output
+    val inputInclCache = input + cacheRead + cacheWrite
+    val hitRate = if (inputInclCache > 0) cacheRead.toDouble() / inputInclCache else null
+
+    Column(Modifier.fillMaxWidth()) {
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                name,
+                fontSize = 14.sp,
+                fontWeight = FontWeight.Medium,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.weight(1f),
+            )
+            Text(
+                formatTokens(total),
+                fontSize = 16.sp,
+                fontWeight = FontWeight.SemiBold,
+                color = gold,
+            )
+        }
+        Spacer(Modifier.height(4.dp))
+        // 进度条 + 占比
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+            Box(
+                Modifier.weight(1f).height(4.dp).clip(RoundedCornerShape(2.dp)).background(track)
+            ) {
+                Box(
+                    Modifier.fillMaxWidth(share.coerceIn(0f, 1f)).height(4.dp)
+                        .clip(RoundedCornerShape(2.dp)).background(gold)
+                )
+            }
+            Spacer(Modifier.width(8.dp))
+            Text(
+                "${(share * 100).toInt()}%",
+                fontSize = 11.sp,
+                color = onVariant,
+            )
+        }
+        Spacer(Modifier.height(3.dp))
+        // 字段行1：总（不含缓存读）· 输入（含缓存）
+        Text(
+            "总(不含缓存读) ${formatTokens(nonCached)} · 输入(含缓存) ${formatTokens(inputInclCache)}",
+            fontSize = 11.sp,
+            color = onVariant,
+            lineHeight = 16.sp,
+        )
+        // 字段行2：输出 · 缓存读 · 命中率
+        Text(
+            buildString {
+                append("输出 ${formatTokens(output)} · 缓存读 ${formatTokens(cacheRead)}")
+                if (cacheWrite > 0) append(" · 缓存写 ${formatTokens(cacheWrite)}")
+                hitRate?.let { append(" · 命中率 ${(it * 100).toInt()}%") }
+                append(" · ${stats.requests} 次")
+                if (stats.costMicros > 0) append(" · ${formatMicroUsd(stats.costMicros)}")
+            },
+            fontSize = 11.sp,
+            color = onVariant,
+            lineHeight = 16.sp,
+        )
     }
 }
