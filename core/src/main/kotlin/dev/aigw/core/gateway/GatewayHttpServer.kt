@@ -370,7 +370,7 @@ class GatewayHttpServer(
         if (!auth.ok) return unauthorized(session)
         val clientKey = auth.clientKey
 
-        val (rawBody, readResult) = readBody(session); try { java.io.File("/storage/emulated/0/Android/data/dev.aigw.app/files/aigw_body.txt").writeText(rawBody) } catch (_: Throwable) {}
+        val (rawBody, readResult) = readBody(session); try { log("诊断: 收到请求 bodyLen=${rawBody.length} head=${rawBody.take(800)}") } catch (_: Throwable) {}
         if (readResult == BodyReadResult.OVER_LIMIT) {
             return errorResponse(413, "payload_too_large", "请求体超过网关 ${MAX_BODY_BYTES / (1024 * 1024)}MB 上限")
         }
@@ -434,6 +434,11 @@ class GatewayHttpServer(
         val effectiveModel = runCatching {
             JsonParser.parseString(rewritten).asJsonObject.get("model")?.asString
         }.getOrNull()?.takeIf { it.isNotBlank() } ?: requestedModel
+        // 中间件改写诊断：改写后仍有空 content 就告警（App「请求日志」页可见）
+        runCatching {
+            val emptyCount = Regex("\"content\":(\"\"|null)").findAll(rewritten).count()
+            if (emptyCount > 0) log("诊断: 中间件改写后仍有 ${emptyCount} 条空 content（未兜住）")
+        }
 
         val primaryRoute = engine.resolveRoute(effectiveModel, rewritten)
             ?: return errorResponse(400, "invalid_request", "缺少 model 参数")
