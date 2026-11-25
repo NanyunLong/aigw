@@ -50,7 +50,7 @@ object GlmUi : ProviderUi {
             SectionCard(enterIndex = 0) {
                 SectionLabel("登录")
                 Text(
-                    text = "在 App 内置浏览器里打开智谱清言，登录后点「完成登录」自动提取凭证。",
+                    text = "在 App 内置浏览器里打开智谱清言，登录后会自动提取凭证添加账号。",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
