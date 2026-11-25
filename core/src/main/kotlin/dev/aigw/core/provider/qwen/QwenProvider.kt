@@ -83,7 +83,11 @@ class QwenProvider internal constructor(
 
     override fun pollDeviceAuth(state: String, region: String): DeviceAuthPoll {
         val (deviceCode, codeVerifier) = decodeState(state)
-            ?: return DeviceAuthPoll.Failed("state 无法解析，请重新登录")
+            ?: run {
+                hooks.onLog("Qwen 轮询：state 无法解析")
+                return DeviceAuthPoll.Failed("state 无法解析，请重新登录")
+            }
+        hooks.onLog("Qwen 轮询：device_code=${deviceCode.take(12)}… verifier=${codeVerifier.take(12)}…")
         val body = formEncode(
             linkedMapOf(
                 "grant_type" to GRANT_TYPE_DEVICE,
@@ -93,6 +97,7 @@ class QwenProvider internal constructor(
             ),
         )
         val (status, text) = postForm(TOKEN_ENDPOINT, body)
+        hooks.onLog("Qwen 轮询：HTTP $status，响应=${text.take(200)}")
         // 上游用 400 + error 字段表示「还没授权」，不能当失败
         val obj = runCatching { JsonParser.parseString(text).asJsonObject }.getOrNull()
         val error = obj?.get("error")?.asString.orEmpty()
@@ -107,6 +112,7 @@ class QwenProvider internal constructor(
         if (credential.accessToken.isEmpty()) {
             return DeviceAuthPoll.Failed("轮询响应里没有 access_token")
         }
+        hooks.onLog("Qwen 轮询：成功拿到凭证 uid=${credential.uid}")
         return DeviceAuthPoll.Success(toProviderAccount(credential))
     }
 
