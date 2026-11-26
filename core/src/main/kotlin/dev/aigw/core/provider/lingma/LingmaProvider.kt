@@ -150,10 +150,16 @@ class LingmaProvider internal constructor(
             hooks.onLog("灵码回调原始 token（完整）：${rawToken}")
             val authParts = tryDecodeParts(rawAuth)
                 ?: throw IllegalStateException(
-                    "回调 auth 参数解码失败（Encode=1）原始长度=${rawAuth.length} 头=${rawAuth.take(20)}",
+                    "回调 auth 参数解码失败（Encode=1）原始长度=${rawAuth.length}\n" +
+                        "完整原始值：${rawAuth}\n" +
+                        decodeCandidates(rawAuth).joinToString("\n") { LingmaCrypto.diagnoseDecode(it) },
                 )
             val tokenParts = tryDecodeParts(rawToken)
-                ?: throw IllegalStateException("回调 token 参数解码失败（Encode=1）")
+                ?: throw IllegalStateException(
+                    "回调 token 参数解码失败（Encode=1）原始长度=${rawToken.length}\n" +
+                        "完整原始值：${rawToken}\n" +
+                        decodeCandidates(rawToken).joinToString("\n") { LingmaCrypto.diagnoseDecode(it) },
+                )
             uid = authParts[0]
             aid = authParts[1]
             name = authParts[2]
