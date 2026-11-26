@@ -179,7 +179,7 @@ class LingmaProvider internal constructor(
         if (uid.isEmpty() || oauthToken.isEmpty()) {
             throw IllegalStateException("回调缺少凭证（uid/access_token 为空）")
         }
-        hooks.onLog("灵码回调：uid=$uid name=$name expire=$expireTime")
+        hooks.onLog("灵码回调：uid=$uid name=$name expire=$expireTime tokenLen=${oauthToken.length} tokenHead=${oauthToken.take(20)}")
 
         // 本地派生 cosy 凭证
         val (cosyKey, encryptUserInfo) = LingmaCrypto.generateCosyCredentials(
@@ -444,7 +444,10 @@ class LingmaProvider internal constructor(
         }
         return try {
             val status = conn.responseCode
-            if (status !in 200..299) throw IllegalStateException("模型接口 HTTP $status")
+            if (status !in 200..299) {
+                val errBody = runCatching { HttpSupport.readLimited(conn.errorStream) }.getOrDefault("")
+                throw IllegalStateException("模型接口 HTTP $status：${errBody.take(200)}")
+            }
             val text = HttpSupport.readBody(conn)
             val root = runCatching { JsonParser.parseString(text).asJsonObject }.getOrNull()
                 ?: throw IllegalStateException("模型响应不是合法 JSON")
