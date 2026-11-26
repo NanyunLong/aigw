@@ -222,7 +222,8 @@ class LingmaProvider internal constructor(
                 ProviderModelCatalogView(models, fromFallback = false, error = "")
             }
         } catch (e: Exception) {
-            ProviderModelCatalogView(fallbackModels(), fromFallback = true, error = "cosyKeyLen=${credential.cosyKey.length} infoLen=${credential.encryptUserInfo.length} machineId=${credential.machineId.take(12)} uid=${credential.userId} | ${e.message ?: "拉取模型失败"}")
+            val diag = LingmaCrypto.signatureDiag(credential.cosyKey, credential.encryptUserInfo, MODEL_LIST_PATH)
+            ProviderModelCatalogView(fallbackModels(), fromFallback = true, error = "cosyKeyLen=${credential.cosyKey.length} infoLen=${credential.encryptUserInfo.length} machineId=${credential.machineId.take(12)} uid=${credential.userId} | ${e.message ?: "拉取模型失败"} | diag=$diag")
         }
     }
 

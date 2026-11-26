@@ -203,7 +203,8 @@ internal object LingmaCrypto {
             addProperty("requestId", requestId)
             addProperty("version", "v1")
         }
-        val payloadBase64 = Base64.getEncoder().encodeToString(payload.toString().toByteArray(Charsets.UTF_8))
+        val payloadStr = payload.toString()
+        val payloadBase64 = Base64.getEncoder().encodeToString(payloadStr.toByteArray(Charsets.UTF_8))
         val sigPath = normalizePath(path)
         val preimage = payloadBase64 + "\n" + cosyKey + "\n" + date + "\n" + body + "\n" + sigPath
         val signature = md5Hex(preimage)
@@ -214,6 +215,25 @@ internal object LingmaCrypto {
     fun normalizePath(path: String): String {
         val noQuery = path.substringBefore("?")
         return if (noQuery.startsWith("/algo")) noQuery.removePrefix("/algo") else noQuery
+    }
+
+    /** 签名诊断：输出与 Go/Python 实现可比对的中间值。 */
+    fun signatureDiag(cosyKey: String, encryptUserInfo: String, path: String): String {
+        val date = (System.currentTimeMillis() / 1000).toString()
+        val requestId = java.util.UUID.randomUUID().toString()
+        val payload = JsonObject().apply {
+            addProperty("cosyVersion", LingmaProvider.COSY_VERSION)
+            addProperty("ideVersion", "")
+            addProperty("info", encryptUserInfo)
+            addProperty("requestId", requestId)
+            addProperty("version", "v1")
+        }
+        val payloadStr = payload.toString()
+        val payloadBase64 = Base64.getEncoder().encodeToString(payloadStr.toByteArray(Charsets.UTF_8))
+        val sigPath = normalizePath(path)
+        val preimage = payloadBase64 + "\n" + cosyKey + "\n" + date + "\n" + "" + "\n" + sigPath
+        val signature = md5Hex(preimage)
+        return "payload=$payloadStr|b64=$payloadBase64|sigPath=$sigPath|preimage=${preimage.replace("\n", "\\n")}|sig=$signature"
     }
 
     private fun hex(bytes: ByteArray): String =
