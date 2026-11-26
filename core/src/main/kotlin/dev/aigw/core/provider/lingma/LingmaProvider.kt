@@ -222,7 +222,7 @@ class LingmaProvider internal constructor(
                 ProviderModelCatalogView(models, fromFallback = false, error = "")
             }
         } catch (e: Exception) {
-            ProviderModelCatalogView(fallbackModels(), fromFallback = true, error = e.message ?: "拉取模型失败")
+            ProviderModelCatalogView(fallbackModels(), fromFallback = true, error = "cosyKeyLen=${credential.cosyKey.length} infoLen=${credential.encryptUserInfo.length} machineId=${credential.machineId.take(12)} uid=${credential.userId} | ${e.message ?: "拉取模型失败"}")
         }
     }
 
@@ -446,6 +446,7 @@ class LingmaProvider internal constructor(
             val status = conn.responseCode
             if (status !in 200..299) {
                 val errBody = runCatching { HttpSupport.readLimited(conn.errorStream) }.getOrDefault("")
+                hooks.onLog("灵码模型列表失败：HTTP $status body=$errBody")
                 throw IllegalStateException("模型接口 HTTP $status：${errBody.take(200)}")
             }
             val text = HttpSupport.readBody(conn)
