@@ -52,32 +52,52 @@ internal object LingmaCrypto {
             body.substring(0, dollarStart) + body.substring(dollarStart + p)
         }
         if (clean.isEmpty()) return null
-
-        // 2. 三块重排的逆操作
         val e = clean.length
-        val c = (e + 2) / 3          // ceil(e/3)
-        val f = e / 3                // floor(e/3)
-        val lb = maxOf(0, e - 2 * c) // b2 块长度
-        var b1Size = 2 * c - f
-        if (lb + b1Size > e) b1Size = e - lb
 
-        val b2Block = clean.substring(0, lb)
-        val b1Block = clean.substring(lb, lb + b1Size)
-        val b0Block = clean.substring(lb + b1Size)
-        val reordered = b0Block + b1Block + b2Block
-
-        // 3. 字母表反替换
-        val converted = StringBuilder(reordered.length)
-        for (ch in reordered) {
-            alphaToStd[ch]?.let { converted.append(it) }
+        // 2. 三块重排的逆操作。不同逆向来源对分块用了不同公式（ceil 版 / floor 版），
+        //    且两者在 e%3!=0 时不一致；这里把两种候选都试，谁解出的明文合法就用谁。
+        val candidates = ArrayList<Pair<Int, Int>>() // (b2size, b1size)
+        run {
+            // ceil 版（Encode 用 bs=ceil，对称逆：b0/b1/b2 各约 ceil）
+            val c = (e + 2) / 3
+            val b2 = maxOf(0, e - 2 * c)
+            var b1 = c
+            if (b2 + b1 > e) b1 = e - b2
+            if (b2 >= 0 && b1 >= 0) candidates.add(b2 to b1)
+        }
+        run {
+            // floor 版（Go encode1.go lingmaDecode 原始公式）
+            val c = (e + 2) / 3
+            val f = e / 3
+            var b2 = e - 2 * c
+            if (b2 < 0) b2 = 0
+            var b1 = 2 * c - f
+            if (b2 + b1 > e) b1 = e - b2
+            if (b2 >= 0 && b1 >= 0) candidates.add(b2 to b1)
         }
 
-        // 4. 补 = 后 base64 解码
-        var stdStr = converted.toString()
-        if (stdStr.isEmpty()) return null
-        val missing = (4 - stdStr.length % 4) % 4
-        stdStr += "=".repeat(missing)
-        return runCatching { Base64.getDecoder().decode(stdStr) }.getOrNull()
+        for ((b2Size, b1Size) in candidates) {
+            val b2Block = clean.substring(0, b2Size)
+            val b1Block = clean.substring(b2Size, b2Size + b1Size)
+            val b0Block = clean.substring(b2Size + b1Size)
+            val reordered = b0Block + b1Block + b2Block
+
+            val converted = StringBuilder(reordered.length)
+            for (ch in reordered) {
+                alphaToStd[ch]?.let { converted.append(it) }
+            }
+            var stdStr = converted.toString()
+            if (stdStr.isEmpty()) continue
+            val missing = (4 - stdStr.length % 4) % 4
+            stdStr += "=".repeat(missing)
+            val bytes = runCatching { Base64.getDecoder().decode(stdStr) }.getOrNull() ?: continue
+            // 明文应是 UTF-8 文本（uid/aid/name 用 \n 分隔），含不可打印控制字符则弃用本候选
+            val text = String(bytes, Charsets.UTF_8)
+            if (text.all { it == '\n' || it == '\r' || it == '\t' || it.code in 0x20..0x7E || it.code > 0x7F }) {
+                return bytes
+            }
+        }
+        return null
     }
 
     /** 解码 Encode=1 字符串并按换行拆成恰好 [expectedParts] 段。 */

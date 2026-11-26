@@ -77,8 +77,43 @@ class LingmaProvider internal constructor(
 
     override fun completeWebLogin(callbackUrl: String): ProviderAccount {
         val query = callbackUrl.substringAfter("?", "")
-        val authParam = runCatching { java.net.URLDecoder.decode(queryParam(callbackUrl, "auth").orEmpty(), "UTF-8") }.getOrDefault("")
-        val tokenParam = runCatching { java.net.URLDecoder.decode(queryParam(callbackUrl, "token").orEmpty(), "UTF-8") }.getOrDefault("")
+        // Encode=1 字母表含 & % # 等特殊字符：& 若未转义会把参数切断，% 被 URLDecoder 误解。
+        // 故先取原始值（按已知参数边界切），再分别尝试「原样」与「URL 解码后」两种，谁解得出就用谁。
+        fun rawValue(name: String): String {
+            val q = callbackUrl.substringAfter("?", "")
+            if (q.isEmpty()) return ""
+            val marker = "$name="
+            val start = q.indexOf(marker)
+            if (start < 0) return ""
+            val from = start + marker.length
+            // 到下一个已知参数（&token= / &auth= / &uid= 等）或串尾为止
+            val stops = listOf("&token=", "&auth=", "&uid=", "&aid=", "&name=", "&access_token=", "&refresh_token=", "&expire_time=", "&state=")
+            var end = q.length
+            for (s in stops) {
+                val idx = q.indexOf(s, from)
+                if (idx in from until end) end = idx
+            }
+            return q.substring(from, end)
+        }
+
+        fun decodeCandidates(raw: String): List<String> {
+            if (raw.isEmpty()) return emptyList()
+            val list = ArrayList<String>()
+            list.add(raw) // 原样
+            val dec = runCatching { java.net.URLDecoder.decode(raw, "UTF-8") }.getOrNull()
+            if (dec != null && dec != raw) list.add(dec)
+            return list
+        }
+
+        fun tryDecodeParts(raw: String): List<String>? {
+            for (cand in decodeCandidates(raw)) {
+                LingmaCrypto.customDecryptParts(cand, 3)?.let { return it }
+            }
+            return null
+        }
+
+        val rawAuth = rawValue("auth")
+        val rawToken = rawValue("token")
 
         var uid = ""
         var aid = ""
@@ -87,15 +122,14 @@ class LingmaProvider internal constructor(
         var refreshToken = ""
         var expireTime = 0L
 
-        if (authParam.isNotEmpty() && tokenParam.isNotEmpty()) {
-            hooks.onLog("灵码回调原始 auth（前80字符）：${authParam.take(80)}")
-            hooks.onLog("灵码回调原始 token（前80字符）：${tokenParam.take(80)}")
-            // V2 回调：auth/token 都是 Encode=1 编码
-            val authParts = LingmaCrypto.customDecryptParts(authParam, 3)
+        if (rawAuth.isNotEmpty() && rawToken.isNotEmpty()) {
+            hooks.onLog("灵码回调原始 auth（前80字符）：${rawAuth.take(80)}")
+            hooks.onLog("灵码回调原始 token（前80字符）：${rawToken.take(80)}")
+            val authParts = tryDecodeParts(rawAuth)
                 ?: throw IllegalStateException(
-                    "回调 auth 参数解码失败（Encode=1）原始长度=${authParam.length} 头=${authParam.take(20)}",
+                    "回调 auth 参数解码失败（Encode=1）原始长度=${rawAuth.length} 头=${rawAuth.take(20)}",
                 )
-            val tokenParts = LingmaCrypto.customDecryptParts(tokenParam, 3)
+            val tokenParts = tryDecodeParts(rawToken)
                 ?: throw IllegalStateException("回调 token 参数解码失败（Encode=1）")
             uid = authParts[0]
             aid = authParts[1]
@@ -105,11 +139,12 @@ class LingmaProvider internal constructor(
             expireTime = tokenParts[2].toLongOrNull() ?: 0L
         } else {
             // V1 明文兜底
-            uid = runCatching { java.net.URLDecoder.decode(queryParam(callbackUrl, "uid").orEmpty(), "UTF-8") }.getOrDefault("")
-            aid = runCatching { java.net.URLDecoder.decode(queryParam(callbackUrl, "aid").orEmpty(), "UTF-8") }.getOrDefault("")
-            name = runCatching { java.net.URLDecoder.decode(queryParam(callbackUrl, "name").orEmpty(), "UTF-8") }.getOrDefault("")
-            oauthToken = runCatching { java.net.URLDecoder.decode(queryParam(callbackUrl, "access_token").orEmpty(), "UTF-8") }.getOrDefault("")
-            refreshToken = runCatching { java.net.URLDecoder.decode(queryParam(callbackUrl, "refresh_token").orEmpty(), "UTF-8") }.getOrDefault("")
+            fun v(n: String) = runCatching { java.net.URLDecoder.decode(queryParam(callbackUrl, n).orEmpty(), "UTF-8") }.getOrDefault("")
+            uid = v("uid")
+            aid = v("aid")
+            name = v("name")
+            oauthToken = v("access_token")
+            refreshToken = v("refresh_token")
             expireTime = queryParam(callbackUrl, "expire_time")?.toLongOrNull() ?: 0L
         }
         if (uid.isEmpty() || oauthToken.isEmpty()) {
