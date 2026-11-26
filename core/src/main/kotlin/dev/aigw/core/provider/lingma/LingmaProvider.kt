@@ -77,8 +77,8 @@ class LingmaProvider internal constructor(
 
     override fun completeWebLogin(callbackUrl: String): ProviderAccount {
         val query = callbackUrl.substringAfter("?", "")
-        val authParam = queryParam(callbackUrl, "auth").orEmpty()
-        val tokenParam = queryParam(callbackUrl, "token").orEmpty()
+        val authParam = runCatching { java.net.URLDecoder.decode(queryParam(callbackUrl, "auth").orEmpty(), "UTF-8") }.getOrDefault("")
+        val tokenParam = runCatching { java.net.URLDecoder.decode(queryParam(callbackUrl, "token").orEmpty(), "UTF-8") }.getOrDefault("")
 
         var uid = ""
         var aid = ""
@@ -88,9 +88,13 @@ class LingmaProvider internal constructor(
         var expireTime = 0L
 
         if (authParam.isNotEmpty() && tokenParam.isNotEmpty()) {
+            hooks.onLog("灵码回调原始 auth（前80字符）：${authParam.take(80)}")
+            hooks.onLog("灵码回调原始 token（前80字符）：${tokenParam.take(80)}")
             // V2 回调：auth/token 都是 Encode=1 编码
             val authParts = LingmaCrypto.customDecryptParts(authParam, 3)
-                ?: throw IllegalStateException("回调 auth 参数解码失败（Encode=1）")
+                ?: throw IllegalStateException(
+                    "回调 auth 参数解码失败（Encode=1）原始长度=${authParam.length} 头=${authParam.take(20)}",
+                )
             val tokenParts = LingmaCrypto.customDecryptParts(tokenParam, 3)
                 ?: throw IllegalStateException("回调 token 参数解码失败（Encode=1）")
             uid = authParts[0]
@@ -101,11 +105,11 @@ class LingmaProvider internal constructor(
             expireTime = tokenParts[2].toLongOrNull() ?: 0L
         } else {
             // V1 明文兜底
-            uid = queryParam(callbackUrl, "uid").orEmpty()
-            aid = queryParam(callbackUrl, "aid").orEmpty()
-            name = queryParam(callbackUrl, "name").orEmpty()
-            oauthToken = queryParam(callbackUrl, "access_token").orEmpty()
-            refreshToken = queryParam(callbackUrl, "refresh_token").orEmpty()
+            uid = runCatching { java.net.URLDecoder.decode(queryParam(callbackUrl, "uid").orEmpty(), "UTF-8") }.getOrDefault("")
+            aid = runCatching { java.net.URLDecoder.decode(queryParam(callbackUrl, "aid").orEmpty(), "UTF-8") }.getOrDefault("")
+            name = runCatching { java.net.URLDecoder.decode(queryParam(callbackUrl, "name").orEmpty(), "UTF-8") }.getOrDefault("")
+            oauthToken = runCatching { java.net.URLDecoder.decode(queryParam(callbackUrl, "access_token").orEmpty(), "UTF-8") }.getOrDefault("")
+            refreshToken = runCatching { java.net.URLDecoder.decode(queryParam(callbackUrl, "refresh_token").orEmpty(), "UTF-8") }.getOrDefault("")
             expireTime = queryParam(callbackUrl, "expire_time")?.toLongOrNull() ?: 0L
         }
         if (uid.isEmpty() || oauthToken.isEmpty()) {
