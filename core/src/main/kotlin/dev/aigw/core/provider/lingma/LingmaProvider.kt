@@ -109,6 +109,9 @@ class LingmaProvider internal constructor(
             for (cand in decodeCandidates(raw)) {
                 LingmaCrypto.customDecryptParts(cand, 3)?.let { return it }
             }
+            for (cand in decodeCandidates(raw)) {
+                hooks.onLog("灵码诊断 auth：${LingmaCrypto.diagnoseDecode(cand)}")
+            }
             return null
         }
 

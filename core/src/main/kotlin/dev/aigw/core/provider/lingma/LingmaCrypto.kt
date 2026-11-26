@@ -108,6 +108,43 @@ internal object LingmaCrypto {
         return parts
     }
 
+    /** 诊断：解码失败时打印每步中间结果，定位是分块、字母表还是 base64 环节出错。 */
+    fun diagnoseDecode(encoded: String): String {
+        val sb = StringBuilder()
+        sb.append("[len=${encoded.length}] ")
+        // 去 $
+        val dollarStart = encoded.indexOf('$')
+        val clean = if (dollarStart < 0) encoded else {
+            var p = 0
+            var pos = dollarStart
+            while (pos < encoded.length && encoded[pos] == '$') { p++; pos++ }
+            encoded.substring(0, dollarStart) + encoded.substring(dollarStart + p)
+        }
+        sb.append("[clean=${clean.length}] ")
+        // 非法字符
+        val illegal = clean.filter { it !in ALPHA }
+        if (illegal.isNotEmpty()) sb.append("[非法字符=${illegal.take(10)}] ")
+        val e = clean.length
+        val c = (e + 2) / 3
+        val b2 = maxOf(0, e - 2 * c)
+        var b1 = c
+        if (b2 + b1 > e) b1 = e - b2
+        sb.append("[分块 b2=$b2 b1=$b1 b0=${e - b2 - b1}] ")
+        // 重排 + 替换
+        val reordered = clean.substring(b2 + b1) + clean.substring(b2, b2 + b1) + clean.substring(0, b2)
+        val conv = StringBuilder()
+        for (ch in reordered) alphaToStd[ch]?.let { conv.append(it) }
+        var stdStr = conv.toString()
+        val missing = (4 - stdStr.length % 4) % 4
+        stdStr += "=".repeat(missing)
+        sb.append("[stdLen=${conv.length} pad=$missing] ")
+        sb.append("stdStr=${stdStr.take(80)} ")
+        val bytes = runCatching { Base64.getDecoder().decode(stdStr) }.getOrNull()
+        if (bytes == null) sb.append("[base64解码失败]")
+        else sb.append("[base64OK len=${bytes.size}] 明文=${String(bytes, Charsets.UTF_8).take(80)}")
+        return sb.toString()
+    }
+
     /**
      * 本地派生 cosy 凭证（对照 cosy_generate.go 的 GenerateCosyCredentials）：
      * 1. 随机 16 字节 hex 取前 16 字符作 AES 临时密钥
