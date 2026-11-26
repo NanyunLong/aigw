@@ -54,47 +54,31 @@ internal object LingmaCrypto {
         if (clean.isEmpty()) return null
         val e = clean.length
 
-        // 2. 三块重排的逆操作。不同逆向来源对分块用了不同公式（ceil 版 / floor 版），
-        //    且两者在 e%3!=0 时不一致；这里把两种候选都试，谁解出的明文合法就用谁。
-        val candidates = ArrayList<Pair<Int, Int>>() // (b2size, b1size)
-        run {
-            // ceil 版（Encode 用 bs=ceil，对称逆：b0/b1/b2 各约 ceil）
-            val c = (e + 2) / 3
-            val b2 = maxOf(0, e - 2 * c)
-            var b1 = c
-            if (b2 + b1 > e) b1 = e - b2
-            if (b2 >= 0 && b1 >= 0) candidates.add(b2 to b1)
-        }
-        run {
-            // floor 版（Go encode1.go lingmaDecode 原始公式）
-            val c = (e + 2) / 3
-            val f = e / 3
-            var b2 = e - 2 * c
-            if (b2 < 0) b2 = 0
-            var b1 = 2 * c - f
-            if (b2 + b1 > e) b1 = e - b2
-            if (b2 >= 0 && b1 >= 0) candidates.add(b2 to b1)
-        }
-
-        for ((b2Size, b1Size) in candidates) {
-            val b2Block = clean.substring(0, b2Size)
-            val b1Block = clean.substring(b2Size, b2Size + b1Size)
-            val b0Block = clean.substring(b2Size + b1Size)
-            val reordered = b0Block + b1Block + b2Block
-
-            val converted = StringBuilder(reordered.length)
-            for (ch in reordered) {
-                alphaToStd[ch]?.let { converted.append(it) }
-            }
-            var stdStr = converted.toString()
-            if (stdStr.isEmpty()) continue
-            val missing = (4 - stdStr.length % 4) % 4
-            stdStr += "=".repeat(missing)
-            val bytes = runCatching { Base64.getDecoder().decode(stdStr) }.getOrNull() ?: continue
-            // 明文应是 UTF-8 文本（uid/aid/name 用 \n 分隔），含不可打印控制字符则弃用本候选
-            val text = String(bytes, Charsets.UTF_8)
-            if (text.all { it == '\n' || it == '\r' || it == '\t' || it.code in 0x20..0x7E || it.code > 0x7F }) {
-                return bytes
+        // 2. 全枚举分块：lingma2api 的 Encode/Decode 公式在 e%3!=0 时不自洽，
+        //    真实分块可能与理论值差 ±1；枚举所有 (b2,b1) 组合，选明文合法者。
+        //    合法性判据：UTF-8 解码后含恰好 expectedParts-1 个 \n，且各段可打印。
+        for (b2Size in 0..e) {
+            for (b1Size in 0..(e - b2Size)) {
+                val b0Size = e - b2Size - b1Size
+                if (b0Size < 0) continue
+                val reordered = clean.substring(b2Size + b1Size) +
+                    clean.substring(b2Size, b2Size + b1Size) +
+                    clean.substring(0, b2Size)
+                val converted = StringBuilder(reordered.length)
+                for (ch in reordered) {
+                    alphaToStd[ch]?.let { converted.append(it) }
+                }
+                var stdStr = converted.toString()
+                if (stdStr.isEmpty()) continue
+                val missing = (4 - stdStr.length % 4) % 4
+                stdStr += "=".repeat(missing)
+                val bytes = runCatching { Base64.getDecoder().decode(stdStr) }.getOrNull() ?: continue
+                val text = String(bytes, Charsets.UTF_8)
+                // 必须恰好 3 段（uid\naid\nname），且各段不含控制字符
+                val parts = text.split("\n")
+                if (parts.size == 3 && parts.all { p -> p.all { it.code in 0x20..0x7E || it.code > 0x7F } }) {
+                    return bytes
+                }
             }
         }
         return null
@@ -103,9 +87,7 @@ internal object LingmaCrypto {
     /** 解码 Encode=1 字符串并按换行拆成恰好 [expectedParts] 段。 */
     fun customDecryptParts(encoded: String, expectedParts: Int): List<String>? {
         val raw = lingmaDecode(encoded) ?: return null
-        val parts = String(raw, Charsets.UTF_8).split("\n")
-        if (parts.size < expectedParts) return null
-        return parts
+        return String(raw, Charsets.UTF_8).split("\n")
     }
 
     /** 诊断：解码失败时打印每步中间结果，定位是分块、字母表还是 base64 环节出错。 */
