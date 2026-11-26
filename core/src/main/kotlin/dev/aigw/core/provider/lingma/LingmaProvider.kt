@@ -96,12 +96,32 @@ class LingmaProvider internal constructor(
             return q.substring(from, end)
         }
 
+        /** 安全的 percent 解码：只解合法 %XX，保留字面 %（避免 URLDecoder 遇非hex抛异常丢候选）。 */
+        fun safePercentDecode(raw: String): String {
+            val sb = StringBuilder(raw.length)
+            var i = 0
+            while (i < raw.length) {
+                if (raw[i] == '%' && i + 2 < raw.length) {
+                    val h1 = raw[i + 1].digitToIntOrNull(16)
+                    val h2 = raw[i + 2].digitToIntOrNull(16)
+                    if (h1 != null && h2 != null) {
+                        sb.append(((h1 shl 4) or h2).toChar())
+                        i += 3
+                        continue
+                    }
+                }
+                sb.append(raw[i])
+                i++
+            }
+            return sb.toString()
+        }
+
         fun decodeCandidates(raw: String): List<String> {
             if (raw.isEmpty()) return emptyList()
             val list = ArrayList<String>()
             list.add(raw) // 原样
-            val dec = runCatching { java.net.URLDecoder.decode(raw, "UTF-8") }.getOrNull()
-            if (dec != null && dec != raw) list.add(dec)
+            val dec = safePercentDecode(raw)
+            if (dec != raw) list.add(dec)
             return list
         }
 
