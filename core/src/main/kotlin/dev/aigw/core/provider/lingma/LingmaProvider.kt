@@ -123,8 +123,8 @@ class LingmaProvider internal constructor(
         var expireTime = 0L
 
         if (rawAuth.isNotEmpty() && rawToken.isNotEmpty()) {
-            hooks.onLog("灵码回调原始 auth（前80字符）：${rawAuth.take(80)}")
-            hooks.onLog("灵码回调原始 token（前80字符）：${rawToken.take(80)}")
+            hooks.onLog("灵码回调原始 auth（完整）：${rawAuth}")
+            hooks.onLog("灵码回调原始 token（完整）：${rawToken}")
             val authParts = tryDecodeParts(rawAuth)
                 ?: throw IllegalStateException(
                     "回调 auth 参数解码失败（Encode=1）原始长度=${rawAuth.length} 头=${rawAuth.take(20)}",
