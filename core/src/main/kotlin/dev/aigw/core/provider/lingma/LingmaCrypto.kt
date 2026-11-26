@@ -157,30 +157,17 @@ internal object LingmaCrypto {
             val cosyKey = Base64.getEncoder().encodeToString(encryptedKey)
 
             // 3. 21 字段用户信息 JSON → AES-128-CBC → base64 → encrypt_user_info
+            // 手写 JSON 保证字段顺序与 Go 一致，且 organization_tags 序列化为 null（Gson 默认跳过 null）
             val effectiveAid = aid.ifEmpty { uid }
-            val info = JsonObject().apply {
-                addProperty("name", name)
-                addProperty("aid", effectiveAid)
-                addProperty("uid", uid)
-                addProperty("yx_uid", "")
-                addProperty("organization_id", "")
-                addProperty("organization_name", "")
-                addProperty("staffId", "")
-                addProperty("avatar_url", "")
-                addProperty("key", "")
-                addProperty("encrypt_user_info", "")
-                addProperty("user_source_channel", "")
-                addProperty("security_oauth_token", oauthToken)
-                addProperty("refresh_token", refreshToken)
-                addProperty("expire_time", 0)
-                addProperty("user_type", "")
-                addProperty("data_policy_agreed", false)
-                addProperty("email", "")
-                addProperty("is_data_policy_modifiable", false)
-                addProperty("is_quota_exceeded", false)
-                addProperty("organization_tags", null as String?)
+            fun esc(s: String) = s.replace("\\", "\\\\").replace("\"", "\\\"").replace("\n", "\\n").replace("\r", "\\r").replace("\t", "\\t")
+            val infoJson = buildString {
+                append("{\"name\":\"").append(esc(name))
+                append("\",\"aid\":\"").append(esc(effectiveAid))
+                append("\",\"uid\":\"").append(esc(uid))
+                append("\",\"yx_uid\":\"\",\"organization_id\":\"\",\"organization_name\":\"\",\"staffId\":\"\",\"avatar_url\":\"\",\"key\":\"\",\"encrypt_user_info\":\"\",\"user_source_channel\":\"\",\"security_oauth_token\":\"").append(esc(oauthToken))
+                append("\",\"refresh_token\":\"").append(esc(refreshToken))
+                append("\",\"expire_time\":0,\"user_type\":\"\",\"data_policy_agreed\":false,\"email\":\"\",\"is_data_policy_modifiable\":false,\"is_quota_exceeded\":false,\"organization_tags\":null}")
             }
-            val infoJson = info.toString()
             val aesCipher = Cipher.getInstance("AES/CBC/PKCS5Padding")
             val secretKey = javax.crypto.spec.SecretKeySpec(keyBytes, "AES")
             val ivSpec = javax.crypto.spec.IvParameterSpec(keyBytes)
