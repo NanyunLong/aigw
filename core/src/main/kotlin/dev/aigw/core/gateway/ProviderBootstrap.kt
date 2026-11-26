@@ -74,11 +74,4 @@ internal fun registerBuiltinProviders(engine: GatewayEngine) {
             nowMillis = { engine.now() },
         ),
     )
-
-    registry.register(
-        dev.aigw.core.provider.lingma.LingmaProvider(
-            hooks = engine.hooks,
-            nowMillis = { engine.now() },
-        ),
-    )
 }
